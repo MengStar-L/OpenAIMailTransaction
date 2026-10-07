@@ -18,7 +18,7 @@ usage() {
   cat <<'USAGE'
 拾光 Linux 安装 / 升级
 用法：sudo bash install.sh [选项]
-  --version v1.0.2        安装指定稳定版本（默认 latest）
+  --version v1.0.3        安装指定稳定版本（默认 latest）
   --dir /opt/shiguang     安装目录，必须位于 /opt 下
   --listen HOST:PORT     监听地址（新安装默认 0.0.0.0:8080；升级时显式传入可修改）
   --no-auto-update        首次安装不启用自动更新，仍自动检查

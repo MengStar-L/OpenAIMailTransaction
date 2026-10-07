@@ -137,7 +137,16 @@ def assert_listening(address):
     expected = socket.inet_aton(host)[::-1].hex().upper() + f":{int(port):04X}"
     listeners = [line.split()[1] for line in Path("/proc/net/tcp").read_text().splitlines()[1:]
                  if line.split()[3] == "0A"]
-    assert expected in listeners, f"Service is not listening on {address}"
+    # Go may represent an IPv4 wildcard as a dual-stack IPv6 listener.
+    # The IPv4 health request below also proves the socket accepts IPv4.
+    dual_stack = False
+    if host == "0.0.0.0" and Path("/proc/net/tcp6").exists():
+        ipv6_listeners = [line.split()[1] for line in Path("/proc/net/tcp6").read_text().splitlines()[1:]
+                          if line.split()[3] == "0A"]
+        dual_stack = "0" * 32 + f":{int(port):04X}" in ipv6_listeners
+    assert expected in listeners or dual_stack, f"Service is not listening on {address}"
+    with CLIENT.open(BASE + "/healthz", timeout=5) as response:
+        assert response.read() == b"ok"
     assert re.search(r"(?m)^LISTEN_ADDR=" + re.escape(address) + r"$", (ROOT / ".env").read_text())
 
 

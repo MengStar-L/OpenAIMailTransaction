@@ -205,7 +205,7 @@ def safe_cleanup(owned):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--release', default='v1.0.2')
+    parser.add_argument('--release', default='v1.0.3')
     parser.add_argument('--old-binary', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
