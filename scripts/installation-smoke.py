@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import urllib.request
+import urllib.error
 
 
 assert os.environ.get("GITHUB_ACTIONS") == "true", "Disposable GitHub runner required"
@@ -32,8 +33,14 @@ def api(path, data=None, method=None):
     body = None if data is None else json.dumps(data).encode()
     request = urllib.request.Request(BASE + path, data=body, method=method,
                                      headers={"Content-Type": "application/json", "Origin": BASE})
-    with CLIENT.open(request, timeout=10) as response:
-        return json.load(response)
+    try:
+        with CLIENT.open(request, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        # Fixtures contain no real credentials; expose the server's validation
+        # message so an API-contract mismatch is actionable in CI.
+        detail = error.read(4096).decode(errors="replace")
+        raise AssertionError(f"Smoke API {path}: HTTP {error.code}: {detail}") from None
 
 
 def data_fingerprint():
@@ -104,6 +111,13 @@ def initialize():
     assert settings["email_ttl_minutes"] == 25
     assert settings["mode"] == "live"
     assert settings["api_configured"] is False
+    writable = {
+        "brand", "phone_enabled", "email_enabled", "phone_service",
+        "phone_country", "phone_max_price", "phone_ttl_minutes",
+        "email_service", "email_domain", "email_max_price", "email_ttl_minutes",
+        "background_type", "background_url",
+    }
+    settings = {key: value for key, value in settings.items() if key in writable}
     settings.update(brand="CI 拾光", email_max_price="0.02", api_key=FAKE_KEY)
     saved = api("/api/admin/settings", settings, "PUT")
     assert saved["api_configured"] is True
