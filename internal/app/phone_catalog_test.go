@@ -76,9 +76,9 @@ func TestPhoneVoucherExpiringDuringQuoteDoesNotPurchase(t *testing.T) {
 	}
 }
 
-func TestPhoneCatalogReadOnlySnapshotAndPriceFilter(t *testing.T) {
+func TestPhoneCatalogReadOnlyCurrentPolicyAndPriceFilter(t *testing.T) {
 	a, p := catalogTestApp(t)
-	// A later settings edit cannot expand an issued voucher's original scope.
+	// Issued vouchers follow current country and price policy for new purchases.
 	a.settings.PhoneCountry = "*"
 	a.settings.PhoneMaxPrice = "99"
 	w := apiRequest(a.Handler(), "POST", "/api/phone/channels", map[string]string{"cdk": "DEMO-PHONE"}, "", nil, "")
@@ -89,7 +89,7 @@ func TestPhoneCatalogReadOnlySnapshotAndPriceFilter(t *testing.T) {
 		Channels []provider.PhoneChannel `json:"channels"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &v)
-	if len(v.Channels) != 2 {
+	if len(v.Channels) != 4 {
 		t.Fatalf("filtered channels: %s", w.Body.String())
 	}
 	var attempts, used, orders int

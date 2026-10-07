@@ -31,12 +31,32 @@
     let host = null;
     let request = 0;
     let reload = null;
+    let cachedLoader = null;
     let filter = '';
     let page = 1;
     const size = 30;
-    const state = { channels: [], selected: null, loading: false, loaded: false, error: '', result: null, key: '' };
+    const state = { channels: [], selected: null, loading: false, refreshing: false, loaded: false, error: '', result: null, key: '' };
     const notify = () => options.onChange?.(state);
     const selectable = options.selectable !== false;
+    const matchingChoice = previous => previous ? state.channels.find(channel => keyFor(channel) === keyFor(previous) && Number(channel.price) === Number(previous.price) && Number(channel.count) !== 0) || null : null;
+    function repaint() {
+      if (!host?.isConnected) return;
+      const focused = host.contains(document.activeElement) ? document.activeElement : null;
+      const searchFocused = focused?.matches('.phone-channel-search');
+      const selection = searchFocused ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+      const radioValue = focused?.matches('input[type="radio"]') ? focused.value : null;
+      const scrollTop = host.querySelector('.phone-catalog-list')?.scrollTop || 0;
+      status();
+      if (searchFocused) {
+        const search = host.querySelector('.phone-channel-search');
+        search?.focus({ preventScroll: true }); search?.setSelectionRange(...selection);
+      } else if (radioValue != null) {
+        const choices = Array.from(host.querySelectorAll('input[type="radio"]'));
+        (choices.find(input => input.value === radioValue) || choices[0])?.focus({ preventScroll: true });
+      }
+      const list = host.querySelector('.phone-catalog-list');
+      if (list) list.scrollTop = scrollTop;
+    }
     function status(message = '') {
       if (!host?.isConnected) return;
       host.hidden = state.result?.kind === 'email';
@@ -57,7 +77,7 @@
       const items = filtered.slice((page - 1) * size, page * size);
       target.innerHTML = items.map(channel => {
         const chosen = state.selected && keyFor(state.selected) === keyFor(channel);
-        const count = channel.count == null || channel.count === '' ? '余量未知' : Number(channel.count) === -1 || channel.count === 'few' ? '少量' : Number.isFinite(Number(channel.count)) ? `余 ${new Intl.NumberFormat('zh-CN').format(Math.max(0, Number(channel.count)))}` : '余量未知';
+        const count = channel.count == null || channel.count === '' ? '余量未知' : Number(channel.count) === -1 || channel.count === 'few' ? '参考少量' : Number.isFinite(Number(channel.count)) ? `参考余量 ${new Intl.NumberFormat('zh-CN').format(Math.max(0, Number(channel.count)))}` : '余量未知';
         const noStock = channel.count != null && channel.count !== '' && Number(channel.count) === 0;
         return `<${selectable ? 'label' : 'div'} class="phone-channel-row${chosen ? ' selected' : ''}${noStock ? ' unavailable' : ''}">${selectable ? `<input type="radio" name="${id}" value="${escape(keyFor(channel))}" ${chosen ? 'checked' : ''} ${state.loading || noStock ? 'disabled' : ''} aria-label="${escape(channel.country_name || channel.country)}，渠道 ${escape(channel.provider_id)}，${escape(tiers[channel.tier] || '未评级')}，${escape(channel.price)} 美元">` : ''}<span class="phone-channel-country"><strong>${escape(channel.country_name || `国家 ${channel.country}`)}</strong><small>${escape(channel.country)} · #${escape(channel.provider_id)}</small></span><span class="phone-tier ${channel.tier}"><span aria-hidden="true">${channel.tier === 'gold' ? '☀' : channel.tier === 'silver' ? '☾' : channel.tier === 'bronze' ? '✧' : '·'}</span>${tiers[channel.tier] || '未评级'}</span><span class="phone-channel-cost"><strong>$${escape(channel.price)}</strong><small>${escape(count)}</small></span></${selectable ? 'label' : 'div'}>`;
       }).join('');
@@ -78,9 +98,11 @@
     return {
       state,
       mount(element) { host = element; status(); },
-      invalidate(message = '') { ++request; state.channels = []; state.selected = null; state.loading = false; state.loaded = false; state.error = ''; state.result = null; state.key = ''; filter = ''; page = 1; reload = null; status(message); notify(); },
+      invalidate(message = '') { ++request; state.channels = []; state.selected = null; state.loading = false; state.refreshing = false; state.loaded = false; state.error = ''; state.result = null; state.key = ''; filter = ''; page = 1; reload = null; cachedLoader = null; status(message); notify(); },
       async load(loader, key = '') {
         const epoch = ++request;
+        cachedLoader = loader;
+        state.refreshing = false;
         reload = () => this.load(loader, key);
         const previous = key === state.key ? state.selected : null;
         state.key = key; state.loading = true; state.loaded = false; state.error = ''; state.channels = []; state.selected = null; state.result = null;
@@ -89,12 +111,33 @@
           const result = await loader();
           if (epoch !== request) return null;
           state.result = result; state.channels = normalizeChannels(result.channels); state.loaded = true;
-          state.selected = previous ? state.channels.find(channel => keyFor(channel) === keyFor(previous) && Number(channel.count) !== 0) || null : null;
+          state.selected = matchingChoice(previous);
           return result;
         } catch (error) {
           if (epoch === request) state.error = error.message || '渠道查询失败，请重试';
           return null;
         } finally { if (epoch === request) { state.loading = false; status(); notify(); } }
+      },
+      async refresh() {
+        if (!cachedLoader || state.loading || state.refreshing || options.canRefresh?.() === false) return null;
+        const epoch = ++request;
+        state.refreshing = true;
+        try {
+          const result = await cachedLoader();
+          if (epoch !== request || options.canRefresh?.() === false) return null;
+          const before = JSON.stringify([state.result, state.channels, state.selected, state.error]);
+          const previous = state.selected;
+          state.result = result; state.channels = normalizeChannels(result.channels); state.loaded = true; state.error = '';
+          state.selected = matchingChoice(previous);
+          if (before !== JSON.stringify([state.result, state.channels, state.selected, state.error])) { repaint(); notify(); }
+          return result;
+        } catch (error) {
+          if (epoch === request && options.canRefresh?.() !== false) {
+            state.channels = []; state.selected = null; state.loaded = false; state.error = error.message || '渠道查询失败，请重试';
+            repaint(); notify();
+          }
+          return null;
+        } finally { if (epoch === request) state.refreshing = false; }
       },
       selectedBody() { return selectionBody(state.selected); },
       focus() { host?.querySelector('input[type="radio"]:not(:disabled), .phone-channel-refresh')?.focus(); },

@@ -25,6 +25,110 @@ type phoneCatalogCache struct {
 	ExpiresAt time.Time
 }
 
+const phoneUnavailableTTL = 10 * time.Minute
+const phoneUnavailableLimit = 1024
+const phoneUnavailableMessage = "10 秒内未获取到号码，该渠道暂时隐藏，10 分钟后恢复，请选择其他渠道"
+
+func (a *App) loadPhoneUnavailable() error {
+	if _, err := a.db.Exec("DELETE FROM phone_unavailable WHERE expires_at<=?", millis(time.Now())); err != nil {
+		return err
+	}
+	rows, err := a.db.Query("SELECT credential,service,country,provider_id,expires_at FROM phone_unavailable ORDER BY expires_at DESC LIMIT ?", phoneUnavailableLimit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	a.phoneUnavailable = make(map[[4]string]time.Time)
+	for rows.Next() {
+		var key [4]string
+		var expiry int64
+		if err := rows.Scan(&key[0], &key[1], &key[2], &key[3], &expiry); err != nil {
+			return err
+		}
+		a.phoneUnavailable[key] = stamp(expiry)
+	}
+	return rows.Err()
+}
+
+// A stock rejection is authoritative for this credential and exact channel,
+// even when the upstream reference catalog still advertises positive stock.
+// Price is deliberately excluded: changing a ceiling cannot bypass the pause.
+func (a *App) markPhoneUnavailable(req provider.Request) error {
+	if req.Kind != "phone" || req.Country == "" || req.ProviderID == "" {
+		return nil
+	}
+	credential := hash(a.currentAPIKey())
+	now := time.Now()
+	a.phoneCatalogMu.Lock()
+	defer a.phoneCatalogMu.Unlock()
+	key := [4]string{credential, req.Service, req.Country, req.ProviderID}
+	expires := now.Add(phoneUnavailableTTL)
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("DELETE FROM phone_unavailable WHERE expires_at<=?", millis(now)); err == nil {
+		_, err = tx.Exec(`INSERT INTO phone_unavailable(credential,service,country,provider_id,expires_at) VALUES(?,?,?,?,?)
+ ON CONFLICT(credential,service,country,provider_id) DO UPDATE SET expires_at=excluded.expires_at`, key[0], key[1], key[2], key[3], millis(expires))
+	}
+	if err == nil {
+		_, err = tx.Exec("DELETE FROM phone_unavailable WHERE rowid IN (SELECT rowid FROM phone_unavailable ORDER BY expires_at DESC LIMIT -1 OFFSET ?)", phoneUnavailableLimit)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		return err
+	}
+	for key := range a.phoneCatalogCache {
+		if key[0] == credential && key[1] == req.Service {
+			delete(a.phoneCatalogCache, key)
+		}
+	}
+	for key, until := range a.phoneUnavailable {
+		if !now.Before(until) {
+			delete(a.phoneUnavailable, key)
+		}
+	}
+	if a.phoneUnavailable == nil {
+		a.phoneUnavailable = make(map[[4]string]time.Time)
+	}
+	if _, exists := a.phoneUnavailable[key]; !exists && len(a.phoneUnavailable) >= phoneUnavailableLimit {
+		var earliest [4]string
+		var expiry time.Time
+		for candidate, until := range a.phoneUnavailable {
+			if expiry.IsZero() || until.Before(expiry) {
+				earliest, expiry = candidate, until
+			}
+		}
+		delete(a.phoneUnavailable, earliest)
+	}
+	a.phoneUnavailable[key] = expires
+	return nil
+}
+
+func (a *App) isPhoneUnavailable(service string, choice phoneSelection) bool {
+	key := [4]string{hash(a.currentAPIKey()), service, choice.Country, choice.ProviderID}
+	a.phoneCatalogMu.Lock()
+	defer a.phoneCatalogMu.Unlock()
+	return time.Now().Before(a.phoneUnavailable[key])
+}
+
+// Called with phoneCatalogMu held. Always return a separate slice so filtering
+// never mutates cached reference stock, which is usable again after the pause.
+func (a *App) availablePhoneChannels(channels []provider.PhoneChannel, credential, service string) []provider.PhoneChannel {
+	available := make([]provider.PhoneChannel, 0, len(channels))
+	now := time.Now()
+	for _, channel := range channels {
+		key := [4]string{credential, service, channel.Country, channel.ProviderID}
+		if !now.Before(a.phoneUnavailable[key]) {
+			available = append(available, channel)
+		}
+	}
+	return available
+}
+
 func insertPhoneChannel(tx *sql.Tx, orderID string, channel *provider.PhoneChannel) error {
 	if channel == nil {
 		return nil
@@ -132,15 +236,18 @@ func (a *App) readPhoneChannels(ctx context.Context, s Settings, fresh bool) ([]
 		return nil, errors.New("请先配置支持渠道查询的 API 密钥")
 	}
 	key := [4]string{hash(a.currentAPIKey()), req.Service, req.Country, req.MaxPrice}
-	// Bound both memory and concurrent upstream catalog queries. Credential
-	// changes are excluded by the providerGate held by each caller.
+	// Credential changes are excluded by providerGate, held by each caller.
+	// Do not hold the cache mutex over network I/O: a stock rejection must be
+	// visible immediately, including while a different catalog is loading.
 	a.phoneCatalogMu.Lock()
-	defer a.phoneCatalogMu.Unlock()
 	if !fresh {
 		if cached, ok := a.phoneCatalogCache[key]; ok && time.Now().Before(cached.ExpiresAt) {
-			return cached.Channels, nil
+			channels := a.availablePhoneChannels(cached.Channels, key[0], req.Service)
+			a.phoneCatalogMu.Unlock()
+			return channels, nil
 		}
 	}
+	a.phoneCatalogMu.Unlock()
 	rows, err := client.PhoneChannels(ctx, req)
 	if err != nil {
 		return nil, errors.New(safeError(err))
@@ -153,6 +260,8 @@ func (a *App) readPhoneChannels(ctx context.Context, s Settings, fresh bool) ([]
 		}
 		channels = append(channels, ch)
 	}
+	a.phoneCatalogMu.Lock()
+	defer a.phoneCatalogMu.Unlock()
 	if len(a.phoneCatalogCache) >= 32 {
 		a.phoneCatalogCache = nil
 	}
@@ -160,7 +269,7 @@ func (a *App) readPhoneChannels(ctx context.Context, s Settings, fresh bool) ([]
 		a.phoneCatalogCache = make(map[[4]string]phoneCatalogCache)
 	}
 	a.phoneCatalogCache[key] = phoneCatalogCache{Channels: channels, ExpiresAt: time.Now().Add(20 * time.Second)}
-	return channels, nil
+	return a.availablePhoneChannels(channels, key[0], req.Service), nil
 }
 
 func (a *App) phoneCatalogResponse(w http.ResponseWriter, r *http.Request, s Settings) {
@@ -287,7 +396,7 @@ func (a *App) voucherCatalog(w http.ResponseWriter, r *http.Request, c CDK) {
 		respond(w, 200, map[string]any{"kind": c.Kind, "channels": []provider.PhoneChannel{}, "resume": false})
 		return
 	}
-	a.phoneCatalogResponse(w, r, c.Snapshot)
+	a.phoneCatalogResponse(w, r, a.effectivePhoneSettings(c.Snapshot))
 }
 
 // Resolve a user selection using server-owned voucher/admin settings. Never
@@ -306,6 +415,9 @@ func (a *App) selectedPhoneRequest(s Settings, choice phoneSelection) (provider.
 	if _, err := strconv.ParseUint(choice.ProviderID, 10, 64); err != nil {
 		return provider.Request{}, nil, errors.New("渠道编号无效")
 	}
+	if a.isPhoneUnavailable(s.PhoneService, choice) {
+		return provider.Request{}, nil, errors.New(phoneUnavailableMessage)
+	}
 	s.PhoneCountry = choice.Country
 	ctx, cancel := a.providerContext()
 	defer cancel()
@@ -322,6 +434,9 @@ func (a *App) selectedPhoneRequest(s Settings, choice phoneSelection) (provider.
 			req.MaxPrice = ch.Price
 			return req, &ch, err
 		}
+	}
+	if a.isPhoneUnavailable(s.PhoneService, choice) {
+		return provider.Request{}, nil, errors.New(phoneUnavailableMessage)
 	}
 	return provider.Request{}, nil, errors.New("该渠道已售罄或价格变化，请刷新后重新选择")
 }

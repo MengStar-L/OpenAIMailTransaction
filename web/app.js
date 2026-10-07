@@ -69,6 +69,7 @@
   let queueMinutesPreference = readQueuePreference();
   const queueDrafts = new Map();
   const displayedCodes = new Map();
+  const busyContents = new WeakMap();
   const phoneChannels = window.PhoneChannels;
   let redeemChannels = null;
   let redeemChannelsTimer = null;
@@ -77,6 +78,19 @@
   let replacementChannelsOrder = '';
   let adminPhoneChannels = null;
   let adminRequestPhoneChoice = null;
+  let phoneCatalogTimer = null;
+
+  function refreshVisiblePhoneCatalogs() {
+    if (document.hidden) return;
+    if (isAdmin) {
+      if (!adminResourceBusy.phone && adminResourceTerminal(adminResources.phone) && byId('admin-phone-channels')) adminPhoneChannels?.refresh();
+      return;
+    }
+    if (requestBusy) return;
+    if (byId('redeem-phone-channels') && redeemChannels?.state.result?.kind === 'phone' && !redeemChannels.state.result.resume) redeemChannels.refresh();
+    if (byId('order-phone-channels')) replacementChannels?.refresh();
+  }
+  function startPhoneCatalogWatch() { clearInterval(phoneCatalogTimer); phoneCatalogTimer = setInterval(refreshVisiblePhoneCatalogs, 10000); }
 
   function updateRedeemChannelControls() {
     const form = byId('redeem-form');
@@ -106,7 +120,7 @@
     if (!host || !phoneChannels) return;
     if (!replacementChannels || replacementChannelsOrder !== order.id) {
       replacementChannelsOrder = order.id;
-      replacementChannels = phoneChannels.catalog({ onChange() {
+      replacementChannels = phoneChannels.catalog({ canRefresh: () => !requestBusy, onChange() {
         const button = byId('replace-order');
         if (button) button.disabled = requestBusy || replacementChannels.state.loading || !replacementChannels.state.selected;
       } });
@@ -123,7 +137,7 @@
   function mountAdminPhoneChannels() {
     const host = byId('admin-phone-channels');
     if (!host || !phoneChannels) return;
-    if (!adminPhoneChannels) adminPhoneChannels = phoneChannels.catalog({ onChange: updateAdminPhoneControls });
+    if (!adminPhoneChannels) adminPhoneChannels = phoneChannels.catalog({ canRefresh: () => !adminResourceBusy.phone, onChange: updateAdminPhoneControls });
     adminPhoneChannels.mount(host);
     if (!adminPhoneChannels.state.loaded && !adminPhoneChannels.state.loading && !adminPhoneChannels.state.error) adminPhoneChannels.load(() => api('/api/admin/phone/channels'), 'admin');
     updateAdminPhoneControls();
@@ -139,7 +153,7 @@
     }
   }, true);
   window.addEventListener('blur', () => { focusRoot.classList.add('window-blurred'); });
-  window.addEventListener('focus', () => { focusRoot.classList.remove('window-blurred'); });
+  window.addEventListener('focus', () => { focusRoot.classList.remove('window-blurred'); refreshVisiblePhoneCatalogs(); });
 
   function icon(name, cls = '') { return `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.inbox}</svg>`; }
   function esc(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
@@ -287,7 +301,16 @@
   }
   function announce(message) { byId('announcer').textContent = message; }
   function fieldError(id, message) { const el = byId(id); if (el) el.textContent = message || ''; }
-  function busy(button, state) { if (!button) return; button.disabled = state; button.classList.toggle('loading', state); button.setAttribute('aria-busy', String(state)); }
+  function busy(button, state, label = '') {
+    if (!button) return;
+    if (state && label) {
+      if (!busyContents.has(button)) busyContents.set(button, button.innerHTML);
+      button.innerHTML = `<span>${esc(label)}</span>`;
+    } else if (!state && busyContents.has(button)) {
+      button.innerHTML = busyContents.get(button); busyContents.delete(button);
+    }
+    button.disabled = state; button.classList.toggle('loading', state); button.setAttribute('aria-busy', String(state));
+  }
   function lockControls(root) {
     const controls = Array.from(root?.querySelectorAll('button, input, select') || [], control => [control, control.disabled]);
     controls.forEach(([control]) => { control.disabled = true; });
@@ -346,7 +369,7 @@
     clearTimeout(redeemChannelsTimer); redeemChannels?.invalidate(); redeemChannels = null; redeemChannelsPromise = null;
     byId('exchange').innerHTML = `<div class="card-top"><div><span class="surface-caption">OpenAI</span><h1>兑换接码</h1></div><span class="small-flower" aria-hidden="true">${icon('star')}</span></div><div class="service-types"><span class="service-tag ${config.phone_enabled ? '' : 'unavailable'}">${icon('phone')}手机号</span><span class="service-tag email ${config.email_enabled ? '' : 'unavailable'}">${icon('email')}邮箱</span></div>${config.mode === 'live' && !config.configured ? '<p class="inline-warning">资源服务尚未配置，请联系管理员。</p>' : ''}<form id="redeem-form" class="redeem-form"><div class="field"><label for="cdk">CDK</label><input id="cdk" class="cdk-input" name="cdk" placeholder="输入兑换码" required maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="redeem-error"></div><div id="redeem-phone-channels" class="phone-catalog-slot" hidden></div>${config.email_enabled ? queuePreferenceHTML('redeem-queue-minutes') : ''}<button class="button button-primary" type="submit"><span>兑换</span>${icon('arrow')}</button><p id="redeem-error" class="error-text" role="alert"></p></form>${config.mode === 'demo' ? '<div class="demo-shortcuts"><span>体验</span><button type="button" class="demo-shortcut" data-demo="DEMO-PHONE">手机号</button><button type="button" class="demo-shortcut" data-demo="DEMO-EMAIL">邮箱</button></div>' : ''}`;
     if (phoneChannels) {
-      redeemChannels = phoneChannels.catalog({ onChange: updateRedeemChannelControls });
+      redeemChannels = phoneChannels.catalog({ canRefresh: () => !requestBusy, onChange: updateRedeemChannelControls });
       redeemChannels.mount(byId('redeem-phone-channels'));
       byId('redeem-phone-channels').hidden = true;
       byId('cdk').addEventListener('input', () => {
@@ -377,12 +400,12 @@
     try { queueMinutes = lookup.kind === 'email' ? queuePreferenceValue('redeem-queue-minutes') : undefined; } catch (error) { fieldError(errorID, error.message); return; }
     const button = form.querySelector('[type="submit"]');
     const unlock = lockControls(byId('exchange'));
-    requestBusy = true; ++orderEpoch; busy(button, true); fieldError(errorID, '');
+    requestBusy = true; ++orderEpoch; busy(button, true, lookup.kind === 'phone' && !lookup.resume ? '获取中…' : ''); fieldError(errorID, '');
     try {
       const data = await api('/api/redeem', { method: 'POST', body: { cdk: code, queue_minutes: queueMinutes, ...(lookup.kind === 'phone' && !lookup.resume ? redeemChannels.selectedBody() : {}) } });
       setToken(data.token); input.value = ''; showOrder(data.order); announce(orderStatusName(data.order) || '兑换成功'); startPolling(); refreshInventory();
     } catch (error) { fieldError(errorID, error.message); }
-    finally { requestBusy = false; busy(button, false); unlock(); updateRedeemChannelControls(); }
+    finally { requestBusy = false; busy(button, false); unlock(); updateRedeemChannelControls(); updateCountdown(); }
   }
   function activeStatus(status) { return ['queued', 'allocating', 'waiting', 'received', 'cancel_pending', 'complete_pending', 'next_pending', 'next_uncertain'].includes(status); }
   function queuedBefore(order) { return order.kind === 'email' && !order.resource && (!!order.queue_expires_at || Number(order.queue_attempts) > 0); }
@@ -425,9 +448,9 @@
     byId('exchange').innerHTML = `<div class="card-top"><div class="order-heading"><span class="kind-icon ${email ? 'email' : ''}">${icon(order.kind)}</span><div><span class="surface-caption">OpenAI</span><h1>${type}接码</h1></div></div><span class="order-status ${esc(order.status)}"><span class="status-dot"></span>${esc(orderStatusName(order))}</span></div>${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}" id="resource-value">${esc(order.resource)}</span><button class="copy-button" type="button" id="copy-resource" aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${codeContent}${stateContent}</div><div class="order-meta"><span>${email ? '有效邮箱' : '有效号码'} ${Number(order.used_count) || 0} / ${Number(order.usage_limit) || 1}</span>${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${!finished && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span id="countdown">--:--</span></span>` : ''}</div>${!finished ? '<div class="order-progress"><span id="time-progress" style="width:100%"></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canReplace) ? queuePreferenceHTML('order-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${!email && canReplace ? '<div id="order-phone-channels" class="phone-catalog-slot"></div>' : ''}${canCancel || canComplete || canNext || canReplace ? `<div class="order-actions">${canCancel ? `<button id="cancel-order" class="button button-ghost" type="button">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button id="complete-order" class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button id="next-code" class="button button-primary" type="button">${icon('refresh')}重试接收</button>` : ''}${canReplace ? `<button id="replace-order" class="button button-primary" type="button">${icon('arrow')}${order.status === 'completed' ? '获取下一个' : '重新获取'}</button>` : ''}</div>` : ''}<p id="order-error" class="error-text" role="alert"></p><button class="text-button order-switch" id="switch-cdk" type="button">${activeStatus(order.status) ? '使用其他 CDK' : '返回兑换'}</button>`;
     if (!email && canReplace) mountReplacementChannels(order);
     bindQueuePreference('order-queue-minutes', queued ? () => orderAction('queue-wait') : null);
-    byId('copy-resource')?.addEventListener('click', () => copyText(order.resource));
+    byId('copy-resource')?.addEventListener('click', () => copyResource(order));
     document.querySelectorAll('[data-copy-code]').forEach(button => button.addEventListener('click', () => copyText(codes[Number(button.dataset.copyCode)].code)));
-    byId('cancel-order')?.addEventListener('click', confirmCancel);
+    byId('cancel-order')?.addEventListener('click', () => orderAction('cancel'));
     byId('complete-order')?.addEventListener('click', () => orderAction('complete'));
     byId('next-code')?.addEventListener('click', () => orderAction('next-code'));
     byId('replace-order')?.addEventListener('click', () => orderAction('replace'));
@@ -451,9 +474,8 @@
     const cancel = byId('cancel-order');
     if (cancel) {
       const queued = currentOrder.status === 'queued';
-      const wait = queued ? 0 : Math.max(0, Math.ceil((Date.parse(currentOrder.cancel_after) - now()) / 1000)) || 0;
-      cancel.disabled = requestBusy || wait > 0;
-      cancel.textContent = queued ? '取消排队' : wait > 0 ? `${wait} 秒后可取消` : '取消本次';
+      cancel.disabled = requestBusy;
+      cancel.textContent = queued ? '取消排队' : '取消本次';
     }
   }
   function startPolling() {
@@ -474,10 +496,6 @@
       else { fieldError('order-error', error.message); }
     } finally { pollBusy = false; }
   }
-  function confirmCancel() {
-    const queued = currentOrder?.status === 'queued';
-    openDialog(queued ? '取消排队' : '取消本次接码', `<p class="dialog-body">${queued ? '取消后可重新排队，不扣额度。' : '未收到验证码不扣额度，释放后可重新获取。'}</p><div class="dialog-actions"><button class="button button-ghost" data-close>继续等待</button><button class="button button-primary" id="confirm-cancel">${queued ? '取消排队' : '确认取消'}</button></div>`, () => byId('confirm-cancel').addEventListener('click', () => { closeDialog(); orderAction('cancel'); }));
-  }
   async function orderAction(action) {
     if (requestBusy || (currentOrder?.status === 'queued' && !['cancel', 'queue-wait'].includes(action))) return;
     let queueMinutes;
@@ -490,11 +508,15 @@
     const body = action === 'next-code' ? { round: Number(currentOrder?.mail_round) || 1 } : ['replace', 'queue-wait'].includes(action) ? { queue_minutes: queueMinutes } : {};
     if (action === 'replace' && currentOrder?.kind === 'phone') Object.assign(body, replacementChannels.selectedBody());
     const unlock = lockControls(byId('exchange'));
-    busy(button, true); fieldError('order-error', '');
+    busy(button, true, action === 'replace' && currentOrder?.kind === 'phone' ? '获取中…' : ''); fieldError('order-error', '');
     const previousOrderID = currentOrder?.id;
     try { const data = await api(`/api/orders/${action}`, { method: 'POST', auth: true, body }); if (action === 'queue-wait') queueDrafts.delete(`order-queue-minutes:${currentOrder.id}`); if (data.token) setToken(data.token); showOrder(data.order, { freshAllocation: action === 'replace' && data.order.id !== previousOrderID }); if (!activeStatus(data.order.status)) stopPolling(); else startPolling(); if (action === 'replace') refreshInventory(); if (action === 'queue-wait') notify(data.order.status === 'queued' ? '排队时间已调整' : '排队已结束'); }
     catch (error) { fieldError('order-error', error.message); }
     finally { requestBusy = false; busy(button, false); unlock(); updateCountdown(); }
+  }
+  function copyResource(order) {
+    const value = String(order.resource || '');
+    return copyText(order.kind === 'phone' ? value.replace(/^\+/, '') : value);
   }
   async function copyText(text) {
     let copied = false;
@@ -690,7 +712,7 @@
       const waitLabel = order.status === 'allocating' ? '正在分配资源' : order.status === 'cancel_pending' ? '正在确认资源释放' : order.status === 'complete_pending' ? '正在确认接码结束' : pendingNext ? '接码状态待确认' : email ? `等待第 ${round} 封验证码` : '等待验证码';
       const history = codes.map((item, index) => `<div class="code-entry${receiptAnimation(order.id, item)}"><div class="code-entry-info">${email ? `<span class="code-round">第 ${Number(item.round) || index + 1} 封</span>` : ''}<span class="code-value ${String(item.code).length > 12 ? 'long-code' : ''}">${esc(item.code)}</span>${item.received_at ? `<time class="code-time" datetime="${esc(item.received_at)}">${formatDate(item.received_at)}</time>` : ''}</div><button class="copy-button" type="button" data-admin-copy-code="${index}" aria-label="复制${email ? `第 ${Number(item.round) || index + 1} 封` : ''}验证码">${icon('copy')}</button></div>`).join('');
       card.innerHTML = `${heading}${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}">${esc(order.resource)}</span><button class="copy-button" type="button" data-admin-copy-resource aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${hasCode ? `<div class="code-history" aria-label="验证码记录">${history}</div>` : ''}${inQueue ? queueContent(order) : waiting ? `<div class="code-waiting ${hasCode ? 'following-code' : ''}"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span>${waitLabel}</div>` : !hasCode ? `<p class="terminal-message">${icon(order.status === 'completed' ? 'check' : 'clock')}${esc(orderStatusName(order))}</p>` : ''}</div><div class="order-meta">${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${active && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span data-admin-countdown>--:--</span></span>` : ''}</div>${active ? '<div class="order-progress"><span data-admin-progress></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canCreate) ? queuePreferenceHTML('admin-email-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${!email && canCreate ? '<div id="admin-phone-channels" class="phone-catalog-slot"></div>' : ''}<div class="order-actions">${canCancel ? `<button class="button button-ghost" type="button" data-resource-action="cancel">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button" data-resource-action="complete">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button class="button button-primary" type="button" data-resource-action="next-code">${icon('refresh')}重试接收</button>` : ''}${canCreate ? `<button class="button button-primary" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button>` : ''}${['review', 'next_uncertain'].includes(order.status) ? '<button class="button button-ghost" type="button" data-admin-resolve>核查</button>' : ''}</div><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
-      card.querySelector('[data-admin-copy-resource]')?.addEventListener('click', () => copyText(order.resource));
+      card.querySelector('[data-admin-copy-resource]')?.addEventListener('click', () => copyResource(order));
       card.querySelectorAll('[data-admin-copy-code]').forEach(button => button.addEventListener('click', () => copyText(codes[Number(button.dataset.adminCopyCode)].code)));
       card.querySelector('[data-admin-resolve]')?.addEventListener('click', () => resolveDialog(order));
     }
@@ -735,7 +757,7 @@
     if (action === 'create') { requestID = pendingRequest || newRequestID(); saveAdminRequest(kind, requestID, queueMinutes, phoneChoice); }
     const button = byId(`admin-resource-${kind}`)?.querySelector(action === 'queue-wait' ? '[data-save-queue]' : `[data-resource-action="${action}"]`);
     byId(`admin-resource-${kind}`)?.querySelectorAll('[data-resource-action], .queue-duration-input, [data-save-queue], .phone-catalog input, .phone-catalog button').forEach(el => { el.disabled = true; });
-    busy(button, true); fieldError(`admin-resource-error-${kind}`, '');
+    busy(button, true, action === 'create' && kind === 'phone' ? '获取中…' : ''); fieldError(`admin-resource-error-${kind}`, '');
     try {
       const path = action === 'create' ? '/api/admin/resources' : `/api/admin/resources/${encodeURIComponent(order.id)}/${action}`;
       const body = action === 'create' ? { kind, request_id: requestID, ...(kind === 'email' ? { queue_minutes: queueMinutes } : phoneChoice) } : action === 'next-code' ? { round: Number(order.mail_round) || 1 } : action === 'queue-wait' ? { queue_minutes: queueMinutes } : {};
@@ -775,9 +797,8 @@
       const cancel = card.querySelector('[data-resource-action="cancel"]');
       if (cancel) {
         const queued = order.status === 'queued';
-        const seconds = queued ? 0 : Math.max(0, Math.ceil((Date.parse(order.cancel_after) - now()) / 1000)) || 0;
-        cancel.disabled = adminResourceBusy[kind] || seconds > 0;
-        cancel.textContent = queued ? '取消排队' : seconds > 0 ? `${seconds} 秒后可取消` : '取消本次';
+        cancel.disabled = adminResourceBusy[kind];
+        cancel.textContent = queued ? '取消排队' : '取消本次';
       }
     }
   }
@@ -985,12 +1006,14 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     refreshInventory();
+    refreshVisiblePhoneCatalogs();
     if (!isAdmin && token && currentOrder && activeStatus(currentOrder.status)) pollOrder();
     if (isAdmin && byId('admin-resource-email')) { updateAdminResourceCountdowns(); pollAdminResource('phone'); pollAdminResource('email'); }
   });
-  window.addEventListener('pagehide', () => { stopPolling(); stopInventory(); stopAdminResources(); });
+  window.addEventListener('pagehide', () => { stopPolling(); stopInventory(); stopAdminResources(); clearInterval(phoneCatalogTimer); });
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;
+    startPhoneCatalogWatch(); refreshVisiblePhoneCatalogs();
     if (document.querySelector('[data-inventory]')) startInventory();
     if (!isAdmin && token && currentOrder && activeStatus(currentOrder.status)) { startPolling(); pollOrder(); }
     if (isAdmin && byId('logout') && (byId('admin-resource-email') || mailAlerts?.shouldPollHidden(adminResources.email))) { startAdminResources(); pollAdminResource('phone'); pollAdminResource('email'); }
@@ -1002,6 +1025,7 @@
       app.innerHTML = `<main id="main" class="boot"><div style="text-align:center;padding:30px"><span class="boot-mark" aria-hidden="true">${icon('star')}</span><p id="boot-error" class="error-text" style="margin:20px 0"></p><button id="boot-retry" class="button button-primary">重新连接</button></div></main>`;
       byId('boot-error').textContent = error.message; byId('boot-retry').addEventListener('click', init); return;
     }
+    startPhoneCatalogWatch();
     if (isAdmin) {
       try { await api('/api/admin/session'); renderAdminShell(); await showAdminTab(adminTab); }
       catch (error) { if (error.status === 401) await loadAdminAccess(); else renderAdminEntryError(error, init); }

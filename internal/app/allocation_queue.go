@@ -263,7 +263,14 @@ func (a *App) enqueueAllocation(o *Order) error {
 // call and its final durable write, so cancellation cannot discard a purchase.
 func (a *App) performAllocation(o *Order, request provider.Request) error {
 	ctx, cancel := a.providerContext()
-	activation, allocErr := a.currentClient().Allocate(ctx, request)
+	var activation provider.Activation
+	var allocErr error
+	var phoneStockExhausted bool
+	if request.Kind == "phone" {
+		activation, allocErr, phoneStockExhausted = retryPhoneAllocation(ctx, a.currentClient(), request, phoneAllocationWindow, phoneAllocationRetry)
+	} else {
+		activation, allocErr = a.currentClient().Allocate(ctx, request)
+	}
 	cancel()
 	a.observeEmailAllocation(request, allocErr)
 	if allocErr != nil {
@@ -271,6 +278,12 @@ func (a *App) performAllocation(o *Order, request provider.Request) error {
 		if errors.As(allocErr, &pe) && !pe.Uncertain {
 			if request.Kind == "email" && pe.Code == "no_stock" {
 				return a.enqueueAllocation(o)
+			}
+			if phoneStockExhausted {
+				if err := a.markPhoneUnavailable(request); err != nil {
+					return err
+				}
+				return a.finishUnallocatedOrder(o, "failed", phoneUnavailableMessage)
 			}
 			return a.finishUnallocatedOrder(o, "failed", safeError(allocErr))
 		}

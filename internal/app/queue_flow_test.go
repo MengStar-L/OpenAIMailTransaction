@@ -222,8 +222,12 @@ func TestEmailQueueOnlyRetriesDefiniteNoStock(t *testing.T) {
 	}
 	p := &testProvider{allocationErrors: []error{noMailboxStock()}}
 	a := newTestApp(t, p)
-	if phone := redeem(t, a, "DEMO-PHONE"); phone.Order.Status != "failed" {
-		t.Fatalf("email queue changed phone rejection: %+v", phone.Order)
+	if phone := redeem(t, a, "DEMO-PHONE"); phone.Order.Status != "waiting" || phone.Order.QueueExpiresAt != nil || p.allocations != 2 {
+		t.Fatalf("phone did not use its short retry window: %+v", phone.Order)
+	}
+	var queuedPhones int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM order_allocation_queue q JOIN orders o ON o.id=q.order_id WHERE o.kind='phone'").Scan(&queuedPhones); err != nil || queuedPhones != 0 {
+		t.Fatalf("phone entered the mailbox queue: %d %v", queuedPhones, err)
 	}
 }
 
@@ -387,14 +391,15 @@ func TestEmailQueueConcurrentRetryCancelAndRequestsPreserveSinglePurchase(t *tes
 					t.Fatalf("duplicate lost the purchased resource: %+v", resumed.Order)
 				}
 			}
-			if w := <-cancelResult; w.Code != http.StatusConflict {
-				t.Fatalf("in-flight success bypassed provider cancel cooldown: %d %s", w.Code, w.Body.String())
+			cancelled := parseOrder(t, <-cancelResult)
+			if cancelled.Order.Status != "cancel_pending" || cancelled.Order.CanRetry {
+				t.Fatalf("in-flight success lost the deferred cancellation: %+v", cancelled.Order)
 			}
 			if calls, _, cancels, _ := p.counts(); calls != 2 || cancels != 0 {
 				t.Fatalf("concurrent actions duplicated or lost purchase: calls=%d cancels=%d", calls, cancels)
 			}
 			o, err := a.getOrder(queued.Order.ID)
-			if err != nil || o.Status != "waiting" || o.ProviderID == "" || o.Resource == "" {
+			if err != nil || o.Status != "cancel_pending" || o.ProviderID == "" || o.Resource == "" {
 				t.Fatalf("purchased resource not durably retained: %+v (%v)", o, err)
 			}
 		})

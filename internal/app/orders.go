@@ -100,7 +100,7 @@ func (a *App) redeemLocked(w http.ResponseWriter, c CDK, queueMinutes int, choic
 	var selectedChannel *provider.PhoneChannel
 	if c.Kind == "phone" {
 		var err error
-		request, selectedChannel, err = a.selectedPhoneRequest(c.Snapshot, choice)
+		request, selectedChannel, err = a.selectedPhoneRequest(a.effectivePhoneSettings(c.Snapshot), choice)
 		if err != nil {
 			fail(w, 409, err.Error())
 			return
@@ -376,7 +376,15 @@ func (a *App) cancelOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if time.Now().Before(o.CancelAfter) {
-		fail(w, 409, "请等待取消倒计时结束")
+		// Accept the user's intent immediately, while retaining the provider's
+		// minimum cancellation window. The worker continues polling for late
+		// codes and retries the release without another browser action.
+		o.CancelReason = "cancelled"
+		if err = a.requestCancel(&o); err != nil {
+			a.databaseError(w, err)
+			return
+		}
+		a.orderResponse(w, o, false)
 		return
 	}
 	// Recheck for a code immediately before cancelling. A confirmed receipt spends

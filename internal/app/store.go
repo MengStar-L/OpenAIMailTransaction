@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, created_at INTEGER NOT
 		db.Close()
 		return nil, err
 	}
+	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS phone_unavailable (
+ credential TEXT NOT NULL, service TEXT NOT NULL, country TEXT NOT NULL,
+ provider_id TEXT NOT NULL, expires_at INTEGER NOT NULL,
+ PRIMARY KEY(credential,service,country,provider_id));`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 

@@ -54,6 +54,7 @@ jobs:
           node --test tests/system-updates.test.cjs
           node --test tests/selects.test.cjs
           node --test tests/phone-channels.test.cjs
+          node --test tests/resource-actions.test.cjs
       - name: Check installer
         run: |
           bash -n scripts/install.sh

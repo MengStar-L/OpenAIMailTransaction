@@ -52,6 +52,7 @@ type App struct {
 	allocationObservations map[[4]string]allocationObservation
 	phoneCatalogMu         sync.Mutex
 	phoneCatalogCache      map[[4]string]phoneCatalogCache
+	phoneUnavailable       map[[4]string]time.Time
 	log                    *log.Logger
 	secret                 []byte
 	settings               Settings
@@ -169,6 +170,9 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	if err = a.initProvider(); err != nil {
+		return nil, err
+	}
+	if err = a.loadPhoneUnavailable(); err != nil {
 		return nil, err
 	}
 	if err = a.recoverOrders(); err != nil {
@@ -322,6 +326,9 @@ func (a *App) validateReady(c CDK) error {
 	}
 	if a.opts.Mode == "live" {
 		v := c.Snapshot
+		if c.Kind == "phone" {
+			v = a.effectivePhoneSettings(v)
+		}
 		if c.Kind == "phone" && (v.PhoneMaxPrice == "" || v.PhoneCountry == "") {
 			return errors.New("请联系管理员配置手机号国家和价格上限")
 		}

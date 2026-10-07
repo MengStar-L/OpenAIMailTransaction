@@ -40,7 +40,7 @@ test('a stale CDK response cannot replace a newer channel list', async () => {
   assert.equal(catalog.state.selected, null);
 });
 
-test('refresh clears selection during lookup and retains it only while the same route is available', async () => {
+test('manual refresh clears selection if the route price changes or its stock disappears', async () => {
   const catalog = moduleAPI().catalog();
   await catalog.load(async () => ({ kind: 'phone', channels: [channel()] }), 'same-cdk');
   catalog.state.selected = catalog.state.channels[0];
@@ -49,9 +49,69 @@ test('refresh clears selection during lookup and retains it only while the same 
   assert.equal(catalog.state.selected, null);
   waiting.resolve({ kind: 'phone', channels: [channel('0', '2368', { price: '0.13' })] });
   await pending;
-  assert.equal(catalog.state.selected.price, '0.13');
+  assert.equal(catalog.state.selected, null);
+  catalog.state.selected = catalog.state.channels[0];
   await catalog.load(async () => ({ kind: 'phone', channels: [channel('0', '2368', { count: 0 })] }), 'same-cdk');
   assert.equal(catalog.state.selected, null);
+});
+
+test('background refresh preserves a stable view and selection, then drops a changed price', async () => {
+  let changed = 0;
+  let next = { kind: 'phone', channels: [channel()] };
+  const catalog = moduleAPI().catalog({ onChange: () => changed++ });
+  await catalog.load(async () => next, 'same-cdk');
+  catalog.state.selected = catalog.state.channels[0];
+  const baseline = changed;
+  await catalog.refresh();
+  assert.equal(changed, baseline, 'unchanged background responses do not rerender or notify');
+  assert.equal(catalog.state.selected.price, '0.12');
+  next = { kind: 'phone', channels: [channel('0', '2368', { price: '0.13' })] };
+  const waiting = catalog.refresh();
+  assert.equal(catalog.state.loading, false);
+  assert.equal(catalog.state.refreshing, true);
+  assert.equal(catalog.state.channels.length, 1, 'do not flash an empty list while fetching');
+  await waiting;
+  assert.equal(catalog.state.selected, null);
+  assert.equal(changed, baseline + 1);
+});
+
+test('live policy refresh removes old routes and later restores channels without choosing or buying them', async () => {
+  let next = { kind: 'phone', countries: '0', max_price: '0.20', channels: [channel()] };
+  const catalog = moduleAPI().catalog();
+  await catalog.load(async () => next, 'old-cdk');
+  catalog.state.selected = catalog.state.channels[0];
+  next = { kind: 'phone', countries: '1', max_price: '0.10', channels: [channel('1', '9', { price: '0.09' })] };
+  await catalog.refresh();
+  assert.equal(catalog.state.selected, null);
+  assert.equal(catalog.state.result.countries, '1');
+  assert.equal(catalog.state.channels[0].provider_id, '9');
+  next = { ...next, channels: [...next.channels, channel('1', '10', { price: '0.08' })] };
+  await catalog.refresh();
+  assert.equal(catalog.state.channels.length, 2);
+  assert.equal(catalog.state.selected, null);
+});
+
+test('background responses cannot change a purchasing form or overwrite a newer CDK', async () => {
+  let mayRefresh = true;
+  let next = { kind: 'phone', channels: [channel()] };
+  const catalog = moduleAPI().catalog({ canRefresh: () => mayRefresh });
+  await catalog.load(async () => next, 'old-cdk');
+  const waiting = deferred();
+  next = waiting.promise;
+  const refreshing = catalog.refresh();
+  mayRefresh = false;
+  waiting.resolve({ kind: 'phone', channels: [] });
+  await refreshing;
+  assert.equal(catalog.state.channels.length, 1);
+  mayRefresh = true;
+  const later = deferred(); next = later.promise;
+  const stale = catalog.refresh();
+  catalog.invalidate();
+  await catalog.load(async () => ({ kind: 'phone', channels: [channel('2', '3')] }), 'new-cdk');
+  later.resolve({ kind: 'phone', channels: [] });
+  await stale;
+  assert.equal(catalog.state.key, 'new-cdk');
+  assert.equal(catalog.state.channels[0].provider_id, '3');
 });
 
 test('new CDKs never inherit selections and lookup failures remove stale purchase choices', async () => {

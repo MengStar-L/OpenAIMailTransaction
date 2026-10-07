@@ -298,16 +298,22 @@ func TestCodeDeliverySpendsVoucherAndCannotBeCancelled(t *testing.T) {
 	}
 }
 
-func TestCancelDelayIsEnforcedBeforeUpstreamCall(t *testing.T) {
+func TestCancelDelayAcceptsIntentBeforeUpstreamCall(t *testing.T) {
 	p := &testProvider{cancelDelay: time.Minute}
 	a := newTestApp(t, p)
 	first := redeem(t, a, "DEMO-PHONE")
-	w := apiRequest(a.Handler(), http.MethodPost, "/api/orders/cancel", map[string]any{}, first.Token, nil, "")
-	if w.Code != http.StatusConflict {
-		t.Fatalf("premature cancel HTTP %d: %s", w.Code, w.Body.String())
+	for range 2 {
+		cancelled := parseOrder(t, apiRequest(a.Handler(), http.MethodPost, "/api/orders/cancel", map[string]any{}, first.Token, nil, ""))
+		if cancelled.Order.Status != "cancel_pending" || cancelled.Order.CanRetry || cancelled.Order.UsedCount != 0 {
+			t.Fatalf("cancel intent did not retain the uncharged order: %+v", cancelled.Order)
+		}
 	}
-	if _, _, cancels, _ := p.counts(); cancels != 0 {
-		t.Fatal("premature cancellation reached upstream")
+	stored, err := a.getOrder(first.Order.ID)
+	if err != nil || stored.Status != "cancel_pending" || stored.CancelReason != "cancelled" {
+		t.Fatalf("cancel intent was not persisted: %+v, err %v", stored, err)
+	}
+	if _, polls, cancels, _ := p.counts(); polls != 0 || cancels != 0 {
+		t.Fatalf("queued cancel waited on the provider: polls=%d, cancellations=%d", polls, cancels)
 	}
 	assertCDK(t, a, first.Order, "active", 1)
 }
@@ -489,7 +495,7 @@ func adminCookie(t *testing.T, a *App) *http.Cookie {
 	return cookies[0]
 }
 
-func TestIssuedVoucherSnapshotsPriceAndCountryAndEncryptsRecoverableCode(t *testing.T) {
+func TestIssuedVoucherUsesLivePhonePolicyRetainsWaitAndEncryptsRecoverableCode(t *testing.T) {
 	p := &testProvider{}
 	a := newTestApp(t, p)
 	h := a.Handler()
@@ -522,6 +528,7 @@ func TestIssuedVoucherSnapshotsPriceAndCountryAndEncryptsRecoverableCode(t *test
 		t.Fatal("voucher lookup hash or encrypted recovery code missing")
 	}
 	s.PhoneCountry, s.PhoneMaxPrice, s.PhoneTTLMinutes = "16", "9.99", 20
+	s.PhoneService = "tg"
 	w = apiRequest(h, http.MethodPut, "/api/admin/settings", s, "", cookie, "http://example.test")
 	if w.Code != http.StatusOK {
 		t.Fatalf("new settings HTTP %d: %s", w.Code, w.Body.String())
@@ -530,8 +537,8 @@ func TestIssuedVoucherSnapshotsPriceAndCountryAndEncryptsRecoverableCode(t *test
 	p.mu.Lock()
 	req := p.requests[0]
 	p.mu.Unlock()
-	if req.Country != "187" || req.MaxPrice != "2.50" || req.TTL != 12*time.Minute {
-		t.Fatalf("issued voucher used mutable settings: %+v", req)
+	if req.Country != "16" || req.MaxPrice != "9.99" || req.TTL != 12*time.Minute || req.Service != "dr" {
+		t.Fatalf("issued voucher did not combine current country/price with its original wait: %+v", req)
 	}
 	list := apiRequest(h, http.MethodGet, "/api/admin/cdks", nil, "", cookie, "")
 	if list.Code != http.StatusOK {
