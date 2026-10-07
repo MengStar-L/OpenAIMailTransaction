@@ -1,0 +1,158 @@
+name: Build and release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: go.sum
+      - name: Release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a stable vMAJOR.MINOR.PATCH tag.' >&2; exit 1; }
+            echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev.${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+      - run: go test ./...
+      - run: go vet ./...
+      - name: Frontend checks
+        run: |
+          node --check web/app.js
+          node --check web/mail-alerts.js
+          node --check web/system-updates.js
+          node --test tests/mail-alerts.test.cjs
+          node --test tests/system-updates.test.cjs
+      - name: Check installer
+        run: |
+          bash -n scripts/install.sh
+          bash -n scripts/test-installation-linux.sh
+          shellcheck scripts/install.sh scripts/test-installer.sh scripts/test-installation-linux.sh
+          bash scripts/test-installer.sh
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: go.sum
+      - name: Compile and package
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.test.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          mkdir -p package dist
+          executable=shiguang
+          if [[ "$GOOS" == windows ]]; then executable=shiguang.exe; fi
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath -ldflags="-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.buildDate=$build_date -X main.repository=$REPOSITORY" -o "package/$executable" .
+          cp README.md package/README.md
+          cp .env.example package/.env.example
+          cp docs/INSTALL.md package/INSTALL.md
+          name="shiguang_${VERSION}_${GOOS}_${GOARCH}"
+          if [[ "$GOOS" == windows ]]; then
+            (cd package && zip -q "../dist/$name.zip" "$executable" README.md .env.example INSTALL.md)
+          else
+            tar -czf "dist/$name.tar.gz" -C package "$executable" README.md .env.example INSTALL.md
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  installation-smoke:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: smoke-dist
+      - name: Install and upgrade with real systemd
+        env:
+          VERSION: ${{ needs.test.outputs.version }}
+        shell: bash
+        run: sudo --preserve-env=GITHUB_ACTIONS bash scripts/test-installation-linux.sh "smoke-dist/shiguang_${VERSION}_linux_amd64.tar.gz"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build, installation-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        shell: bash
+        run: |
+          cp scripts/install.sh dist/install.sh
+          (cd dist && sha256sum shiguang_*.tar.gz shiguang_*.zip install.sh > checksums.txt)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          # A draft keeps incomplete uploads out of /releases/latest.
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > release-draft.txt 2>/dev/null; then
+            [[ "$(cat release-draft.txt)" == true ]] || { echo 'This version is already published; create a new tag.' >&2; exit 1; }
+          else
+            gh release create "$TAG" --verify-tag --draft --title "拾光 $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          gh release edit "$TAG" --draft=false --latest

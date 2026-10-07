@@ -1,0 +1,20 @@
+/* Quiet controls for the two arrival reminders. */
+.reminder-control{position:relative;flex:none;z-index:25}
+.reminder-trigger{position:relative;background:#fff;border-color:var(--line)}
+.reminder-trigger[aria-expanded=true]{background:#f1f5f8;border-color:#d7e0e8}
+.reminder-trigger.reminders-muted{color:#858c94}
+.reminder-dot{position:absolute;right:6px;top:6px;width:6px;height:6px;border-radius:50%;background:#799cad;border:1px solid #fff}
+.reminder-panel{position:absolute;right:0;top:calc(100% + 10px);width:218px;padding:14px;border:1px solid var(--line);border-radius:16px;background:#fffefd;box-shadow:0 10px 35px #52617412;animation:reminder-enter .2s var(--ease);transform-origin:top right}
+.reminder-panel h2{font:inherit;font-size:14px;margin:0 4px 10px;color:var(--ink)}
+.reminder-option{display:flex;align-items:center;gap:9px;width:100%;min-height:42px;padding:8px 6px;border:0;border-radius:9px;background:transparent;font:inherit;font-size:13px;text-align:left;transition:background .2s}
+.reminder-option:hover{background:#f7f8fa}
+.reminder-option>svg{width:17px;height:17px;color:#798694}
+.reminder-switch{margin-left:auto;width:30px;height:18px;border-radius:20px;background:#e8ebee;padding:3px;transition:background .2s}
+.reminder-switch:before{content:'';display:block;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .2s var(--ease)}
+.reminder-option[aria-pressed=true] .reminder-switch{background:#a6bac7}
+.reminder-option[aria-pressed=true] .reminder-switch:before{transform:translateX(12px)}
+.reminder-arm{display:block;margin:7px 4px 0;color:#617e94}
+.reminder-panel .inline-note{margin:8px 4px 0}
+@keyframes reminder-enter{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+@media(max-width:600px){.public-header{align-items:flex-start;gap:12px;flex-wrap:wrap}.public-header>.header-actions{flex:1;flex-wrap:wrap}.public-header .inventory-pill{font-size:9px}.admin-topbar>.header-actions{flex-wrap:wrap}.reminder-panel{max-width:calc(100vw - 32px)}}
+@media(prefers-reduced-motion:reduce){.reminder-panel{animation:none}.reminder-switch,.reminder-switch:before{transition:none}}

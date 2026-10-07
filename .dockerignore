@@ -1,0 +1,8 @@
+.git
+.env
+data
+bin
+artifacts
+backups
+.github
+*.log
