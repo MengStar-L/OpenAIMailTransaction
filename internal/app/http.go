@@ -14,6 +14,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", a.publicConfig)
 	mux.HandleFunc("GET /api/inventory", a.inventory)
 	mux.HandleFunc("POST /api/redeem", a.redeem)
+	mux.HandleFunc("POST /api/phone/channels", a.voucherPhoneChannels)
+	mux.HandleFunc("GET /api/orders/phone/channels", a.orderPhoneChannels)
 	mux.HandleFunc("GET /api/orders/current", a.currentOrder)
 	mux.HandleFunc("POST /api/orders/cancel", a.cancelOrder)
 	mux.HandleFunc("POST /api/orders/complete", a.completeOrder)
@@ -39,6 +41,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/cdks/{id}/disable", a.admin(a.disableCDK))
 	mux.HandleFunc("POST /api/admin/cdks/{id}/code", a.admin(a.restoreCDKCode))
 	mux.HandleFunc("GET /api/admin/settings", a.admin(a.getSettings))
+	mux.HandleFunc("GET /api/admin/phone/countries", a.admin(a.adminPhoneCountries))
+	mux.HandleFunc("GET /api/admin/phone/channels", a.admin(a.adminPhoneChannels))
 	mux.HandleFunc("PUT /api/admin/settings", a.admin(a.putSettings))
 	mux.HandleFunc("GET /api/admin/updates", a.admin(a.updateStatus))
 	mux.HandleFunc("PUT /api/admin/updates/settings", a.admin(a.updatePreferences))
@@ -70,7 +74,7 @@ func (a *App) Handler() http.Handler {
 			limit = 10
 			window = 10 * time.Minute
 			key = "login:" + ip
-		} else if r.URL.Path == "/api/redeem" || r.URL.Path == "/api/orders/replace" {
+		} else if r.URL.Path == "/api/redeem" || r.URL.Path == "/api/orders/replace" || r.URL.Path == "/api/phone/channels" {
 			limit = 30
 			key = "redeem:" + ip
 		}

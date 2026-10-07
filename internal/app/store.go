@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, created_at INTEGER NOT
 		db.Close()
 		return nil, fmt.Errorf("migrate automatic mail: %w", err)
 	}
+	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS order_phone_channels (order_id TEXT PRIMARY KEY REFERENCES orders(id), channel_json TEXT NOT NULL);`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -279,6 +283,7 @@ func (a *App) audit(action, id, detail string) {
 	}
 }
 func (a *App) decorate(o *Order) {
+	a.decoratePhoneChannel(o)
 	a.decorateQueue(o)
 	defer a.decorateAutoNext(o)
 	if o.CDKID == "" {

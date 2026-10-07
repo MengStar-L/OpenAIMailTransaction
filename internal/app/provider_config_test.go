@@ -18,6 +18,25 @@ import (
 
 const savedTestAPIKey = "saved-smsbower-api-key-2026"
 
+func serveSettingsTestCatalog(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Query().Get("action") {
+	case "getCountries":
+		_, _ = io.WriteString(w, `{"0":{"id":0,"chn":"俄罗斯","eng":"Russia"}}`)
+	case "getPricesV3":
+		_, _ = io.WriteString(w, `{"0":{"dr":{"2368":{"price":0.1,"count":20,"provider_id":2368}}}}`)
+	case "getTopCountriesByService":
+		_, _ = io.WriteString(w, `{}`)
+	default:
+		return false
+	}
+	return true
+}
+
+func redeemSettingsPhone(t *testing.T, a *App, code string) orderEnvelope {
+	t.Helper()
+	return parseOrder(t, apiRequest(a.Handler(), "POST", "/api/redeem", map[string]string{"cdk": code, "phone_country": "0", "phone_provider_id": "2368"}, "", nil, ""))
+}
+
 func liveSettingsOptions(dir, upstream string) Options {
 	return Options{DataDir: dir, Mode: "live", APIBase: upstream, DisableWorker: true, Logger: log.New(io.Discard, "", 0)}
 }
@@ -79,6 +98,9 @@ func TestAPIKeySettingsEnableImmediatelyAndRemainPrivateAcrossRestart(t *testing
 	var calls atomic.Int32
 	keys := make(chan string, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveSettingsTestCatalog(w, r) {
+			return
+		}
 		calls.Add(1)
 		keys <- r.URL.Query().Get("api_key")
 		if r.URL.Query().Get("action") != "getNumberV2" {
@@ -164,7 +186,7 @@ func TestAPIKeySettingsEnableImmediatelyAndRemainPrivateAcrossRestart(t *testing
 	if calls.Load() != 0 {
 		t.Fatal("saving settings or issuing CDKs purchased an upstream resource")
 	}
-	first := redeem(t, a, code)
+	first := redeemSettingsPhone(t, a, code)
 	if first.Order.Status != "waiting" || <-keys != savedTestAPIKey {
 		t.Fatal("live allocation did not use the newly saved key without a restart")
 	}
@@ -197,7 +219,7 @@ func TestAPIKeySettingsEnableImmediatelyAndRemainPrivateAcrossRestart(t *testing
 	}
 	cookie = adminCookie(t, a)
 	code = issueSettingsTestCDK(t, a, cookie)
-	second := redeem(t, a, code)
+	second := redeemSettingsPhone(t, a, code)
 	if second.Order.Status != "waiting" || <-keys != savedTestAPIKey || encryptedAPIKey(t, a) != stored {
 		t.Fatal("restart did not prefer the persisted API credential over environment configuration")
 	}
@@ -256,6 +278,9 @@ func TestAPIKeySettingsRequireAdministratorAndSameOrigin(t *testing.T) {
 func TestAPIKeyRotationProtectsEveryUnsettledOrder(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveSettingsTestCatalog(w, r) {
+			return
+		}
 		calls.Add(1)
 		_, _ = io.WriteString(w, `{"activationId":"rotation-test","phoneNumber":"12025550123"}`)
 	}))
@@ -270,7 +295,7 @@ func TestAPIKeyRotationProtectsEveryUnsettledOrder(t *testing.T) {
 	cookie := setupTestAdmin(t, a, testAdminPassword)
 	s := configuredResourceSettings()
 	saveAPIKey(t, a, cookie, s, nil)
-	order := redeem(t, a, issueSettingsTestCDK(t, a, cookie))
+	order := redeemSettingsPhone(t, a, issueSettingsTestCDK(t, a, cookie))
 	stored := encryptedAPIKey(t, a)
 	newKey := "replacement-smsbower-api-key"
 	for _, status := range []string{"allocating", "waiting", "received", "cancel_pending", "review", "next_pending", "next_uncertain", "complete_pending"} {
@@ -326,6 +351,9 @@ SELECT 'existing-order',id,'phone','waiting','existing-activation',0,0,0,1,2 FRO
 func TestAPIKeyWriteFailurePreservesSettingsAndLiveProvider(t *testing.T) {
 	keys := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveSettingsTestCatalog(w, r) {
+			return
+		}
 		keys <- r.URL.Query().Get("api_key")
 		_, _ = io.WriteString(w, `{"activationId":"after-write-failure","phoneNumber":"12025550123"}`)
 	}))
@@ -364,7 +392,7 @@ WHEN NEW.key='smsbower_api_key_v1' BEGIN SELECT RAISE(ABORT, 'simulated credenti
 	}
 	assertAPIKeyNotExposed(t, w.Body.String()+logs.String(), savedTestAPIKey)
 	assertAPIKeyNotExposed(t, w.Body.String()+logs.String(), newKey)
-	order := redeem(t, a, issueSettingsTestCDK(t, a, cookie))
+	order := redeemSettingsPhone(t, a, issueSettingsTestCDK(t, a, cookie))
 	if order.Order.Status != "waiting" || <-keys != savedTestAPIKey {
 		t.Fatal("failed credential write replaced or disabled the active provider")
 	}
@@ -460,6 +488,9 @@ func TestAPIKeyTamperingFailsClosedWithoutEnvironmentFallback(t *testing.T) {
 func TestAPIKeyRotationWaitsForInFlightAllocation(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveSettingsTestCatalog(w, r) {
+			return
+		}
 		if r.URL.Query().Get("api_key") != savedTestAPIKey {
 			t.Error("in-flight allocation used an unexpected key")
 		}
@@ -488,7 +519,7 @@ func TestAPIKeyRotationWaitsForInFlightAllocation(t *testing.T) {
 	code := issueSettingsTestCDK(t, a, cookie)
 	allocation := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		allocation <- apiRequest(a.Handler(), http.MethodPost, "/api/redeem", map[string]string{"cdk": code}, "", nil, "")
+		allocation <- apiRequest(a.Handler(), http.MethodPost, "/api/redeem", map[string]string{"cdk": code, "phone_country": "0", "phone_provider_id": "2368"}, "", nil, "")
 	}()
 	select {
 	case <-entered:

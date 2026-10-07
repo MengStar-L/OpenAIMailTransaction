@@ -69,6 +69,65 @@
   let queueMinutesPreference = readQueuePreference();
   const queueDrafts = new Map();
   const displayedCodes = new Map();
+  const phoneChannels = window.PhoneChannels;
+  let redeemChannels = null;
+  let redeemChannelsTimer = null;
+  let redeemChannelsPromise = null;
+  let replacementChannels = null;
+  let replacementChannelsOrder = '';
+  let adminPhoneChannels = null;
+  let adminRequestPhoneChoice = null;
+
+  function updateRedeemChannelControls() {
+    const form = byId('redeem-form');
+    if (!form || !redeemChannels) return;
+    const state = redeemChannels.state;
+    const phone = state.result?.kind === 'phone';
+    const needsChoice = phone && !state.result.resume;
+    const submit = form.querySelector('[type="submit"]');
+    submit.disabled = requestBusy || state.loading || (needsChoice && !state.selected) || (config.mode === 'live' && !config.configured);
+    submit.querySelector('span').textContent = state.loading ? '查询中' : needsChoice && !state.selected ? '请选择渠道' : state.result?.resume ? '继续接码' : '兑换';
+    const queue = byId('redeem-queue-minutes')?.closest('.queue-preferences');
+    if (queue) { queue.hidden = phone; queue.querySelector('input').disabled = phone; }
+  }
+  async function loadRedeemChannels() {
+    const code = byId('cdk')?.value.trim();
+    if (!code || !redeemChannels) return null;
+    if (redeemChannels.state.key === code && redeemChannels.state.loaded) return redeemChannels.state.result;
+    if (redeemChannels.state.key === code && redeemChannels.state.loading) return redeemChannelsPromise;
+    byId('redeem-phone-channels').hidden = false;
+    const catalog = redeemChannels;
+    const pending = catalog.load(() => api('/api/phone/channels', { method: 'POST', body: { cdk: code } }), code);
+    redeemChannelsPromise = pending;
+    return pending;
+  }
+  function mountReplacementChannels(order) {
+    const host = byId('order-phone-channels');
+    if (!host || !phoneChannels) return;
+    if (!replacementChannels || replacementChannelsOrder !== order.id) {
+      replacementChannelsOrder = order.id;
+      replacementChannels = phoneChannels.catalog({ onChange() {
+        const button = byId('replace-order');
+        if (button) button.disabled = requestBusy || replacementChannels.state.loading || !replacementChannels.state.selected;
+      } });
+    }
+    replacementChannels.mount(host);
+    if (!replacementChannels.state.loaded && !replacementChannels.state.loading && !replacementChannels.state.error) replacementChannels.load(() => api('/api/orders/phone/channels', { auth: true }), order.id);
+    const button = byId('replace-order');
+    if (button) button.disabled = requestBusy || replacementChannels.state.loading || !replacementChannels.state.selected;
+  }
+  function updateAdminPhoneControls() {
+    const button = byId('admin-resource-phone')?.querySelector('[data-resource-action="create"]');
+    if (button) button.disabled = adminResourceBusy.phone || (!readAdminRequest('phone') && (!adminPhoneChannels?.state.selected || adminPhoneChannels.state.loading));
+  }
+  function mountAdminPhoneChannels() {
+    const host = byId('admin-phone-channels');
+    if (!host || !phoneChannels) return;
+    if (!adminPhoneChannels) adminPhoneChannels = phoneChannels.catalog({ onChange: updateAdminPhoneControls });
+    adminPhoneChannels.mount(host);
+    if (!adminPhoneChannels.state.loaded && !adminPhoneChannels.state.loading && !adminPhoneChannels.state.error) adminPhoneChannels.load(() => api('/api/admin/phone/channels'), 'admin');
+    updateAdminPhoneControls();
+  }
 
   // Pointer navigation stays clean; keyboard users retain an inset focus cue.
   const focusRoot = document.documentElement;
@@ -284,11 +343,21 @@
   function updateSteps(step) { document.querySelectorAll('[data-step]').forEach(el => { const n = Number(el.dataset.step); el.classList.toggle('active', n === step); el.classList.toggle('done', n < step); if (n === step) el.setAttribute('aria-current', 'step'); else el.removeAttribute('aria-current'); }); }
   function renderRedeem() {
     stopPolling(); ++orderEpoch; currentOrder = null; updateSteps(1);
-    byId('exchange').innerHTML = `<div class="card-top"><div><span class="surface-caption">OpenAI</span><h1>兑换接码</h1></div><span class="small-flower" aria-hidden="true">${icon('star')}</span></div><div class="service-types"><span class="service-tag ${config.phone_enabled ? '' : 'unavailable'}">${icon('phone')}手机号</span><span class="service-tag email ${config.email_enabled ? '' : 'unavailable'}">${icon('email')}邮箱</span></div>${config.mode === 'live' && !config.configured ? '<p class="inline-warning">资源服务尚未配置，请联系管理员。</p>' : ''}<form id="redeem-form" class="redeem-form"><div class="field"><label for="cdk">CDK</label><input id="cdk" class="cdk-input" name="cdk" placeholder="输入兑换码" required maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="redeem-error"></div>${config.email_enabled ? queuePreferenceHTML('redeem-queue-minutes') : ''}<button class="button button-primary" type="submit"><span>兑换</span>${icon('arrow')}</button><p id="redeem-error" class="error-text" role="alert"></p></form>${config.mode === 'demo' ? '<div class="demo-shortcuts"><span>体验</span><button type="button" class="demo-shortcut" data-demo="DEMO-PHONE">手机号</button><button type="button" class="demo-shortcut" data-demo="DEMO-EMAIL">邮箱</button></div>' : ''}`;
+    clearTimeout(redeemChannelsTimer); redeemChannels?.invalidate(); redeemChannels = null; redeemChannelsPromise = null;
+    byId('exchange').innerHTML = `<div class="card-top"><div><span class="surface-caption">OpenAI</span><h1>兑换接码</h1></div><span class="small-flower" aria-hidden="true">${icon('star')}</span></div><div class="service-types"><span class="service-tag ${config.phone_enabled ? '' : 'unavailable'}">${icon('phone')}手机号</span><span class="service-tag email ${config.email_enabled ? '' : 'unavailable'}">${icon('email')}邮箱</span></div>${config.mode === 'live' && !config.configured ? '<p class="inline-warning">资源服务尚未配置，请联系管理员。</p>' : ''}<form id="redeem-form" class="redeem-form"><div class="field"><label for="cdk">CDK</label><input id="cdk" class="cdk-input" name="cdk" placeholder="输入兑换码" required maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="redeem-error"></div><div id="redeem-phone-channels" class="phone-catalog-slot" hidden></div>${config.email_enabled ? queuePreferenceHTML('redeem-queue-minutes') : ''}<button class="button button-primary" type="submit"><span>兑换</span>${icon('arrow')}</button><p id="redeem-error" class="error-text" role="alert"></p></form>${config.mode === 'demo' ? '<div class="demo-shortcuts"><span>体验</span><button type="button" class="demo-shortcut" data-demo="DEMO-PHONE">手机号</button><button type="button" class="demo-shortcut" data-demo="DEMO-EMAIL">邮箱</button></div>' : ''}`;
+    if (phoneChannels) {
+      redeemChannels = phoneChannels.catalog({ onChange: updateRedeemChannelControls });
+      redeemChannels.mount(byId('redeem-phone-channels'));
+      byId('redeem-phone-channels').hidden = true;
+      byId('cdk').addEventListener('input', () => {
+        clearTimeout(redeemChannelsTimer); redeemChannels.invalidate(); byId('redeem-phone-channels').hidden = true; fieldError('redeem-error', '');
+        if (byId('cdk').value.trim().length >= 4) redeemChannelsTimer = setTimeout(loadRedeemChannels, 650);
+      });
+    }
     byId('redeem-form').addEventListener('submit', redeem);
     bindQueuePreference('redeem-queue-minutes');
     byId('redeem-form').querySelector('[type="submit"]').disabled = config.mode === 'live' && !config.configured;
-    document.querySelectorAll('[data-demo]').forEach(button => button.addEventListener('click', () => { byId('cdk').value = button.dataset.demo; byId('cdk').focus(); }));
+    document.querySelectorAll('[data-demo]').forEach(button => button.addEventListener('click', () => { byId('cdk').value = button.dataset.demo; byId('cdk').dispatchEvent(new Event('input', { bubbles: true })); byId('cdk').focus(); }));
   }
   async function redeem(event) {
     event.preventDefault();
@@ -299,16 +368,21 @@
     const errorID = 'redeem-error';
     if (config.mode === 'live' && !config.configured) { fieldError(errorID, '资源服务尚未配置，请联系管理员。'); return; }
     if (!code) { fieldError(errorID, '请输入 CDK。'); input.focus(); return; }
+    clearTimeout(redeemChannelsTimer);
+    const lookup = await loadRedeemChannels();
+    if (requestBusy || !form.isConnected || byId('cdk')?.value.trim() !== code) return;
+    if (!lookup) { fieldError(errorID, redeemChannels?.state.error || '请先查询可用渠道'); return; }
+    if (lookup.kind === 'phone' && !lookup.resume && !redeemChannels.state.selected) { fieldError(errorID, '请选择一个渠道'); redeemChannels.focus(); return; }
     let queueMinutes;
-    try { queueMinutes = queuePreferenceValue('redeem-queue-minutes'); } catch (error) { fieldError(errorID, error.message); return; }
+    try { queueMinutes = lookup.kind === 'email' ? queuePreferenceValue('redeem-queue-minutes') : undefined; } catch (error) { fieldError(errorID, error.message); return; }
     const button = form.querySelector('[type="submit"]');
     const unlock = lockControls(byId('exchange'));
     requestBusy = true; ++orderEpoch; busy(button, true); fieldError(errorID, '');
     try {
-      const data = await api('/api/redeem', { method: 'POST', body: { cdk: code, queue_minutes: queueMinutes } });
+      const data = await api('/api/redeem', { method: 'POST', body: { cdk: code, queue_minutes: queueMinutes, ...(lookup.kind === 'phone' && !lookup.resume ? redeemChannels.selectedBody() : {}) } });
       setToken(data.token); input.value = ''; showOrder(data.order); announce(orderStatusName(data.order) || '兑换成功'); startPolling(); refreshInventory();
     } catch (error) { fieldError(errorID, error.message); }
-    finally { requestBusy = false; busy(button, false); unlock(); }
+    finally { requestBusy = false; busy(button, false); unlock(); updateRedeemChannelControls(); }
   }
   function activeStatus(status) { return ['queued', 'allocating', 'waiting', 'received', 'cancel_pending', 'complete_pending', 'next_pending', 'next_uncertain'].includes(status); }
   function queuedBefore(order) { return order.kind === 'email' && !order.resource && (!!order.queue_expires_at || Number(order.queue_attempts) > 0); }
@@ -348,7 +422,8 @@
     const waitLabel = order.status === 'allocating' ? '正在分配资源' : order.status === 'cancel_pending' ? '正在确认资源释放' : order.status === 'complete_pending' ? '正在确认接码结束' : pendingNext ? '接码状态待确认' : email ? `等待第 ${round} 封验证码` : '等待验证码';
     const codeContent = hasCode ? `<div class="code-history" aria-label="验证码记录">${codes.map((item, index) => `<div class="code-entry${receiptAnimation(order.id, item)}"><div class="code-entry-info">${email ? `<span class="code-round">第 ${Number(item.round) || index + 1} 封</span>` : ''}<span class="code-value ${String(item.code).length > 12 ? 'long-code' : ''}">${esc(item.code)}</span>${item.received_at ? `<time class="code-time" datetime="${esc(item.received_at)}">${formatDate(item.received_at)}</time>` : ''}</div><button class="copy-button" type="button" data-copy-code="${index}" aria-label="复制${email ? `第 ${Number(item.round) || index + 1} 封` : ''}验证码" title="复制验证码">${icon('copy')}</button></div>`).join('')}</div>` : '';
     const stateContent = inQueue ? queueContent(order) : waiting ? `<div class="code-waiting ${hasCode ? 'following-code' : ''}"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span>${waitLabel}</div>` : !hasCode ? `<p class="terminal-message">${icon(order.status === 'completed' ? 'check' : 'clock')}${esc(queueResultLabel(order) || terminalCopy[order.status] || '订单已结束')}</p>` : '';
-    byId('exchange').innerHTML = `<div class="card-top"><div class="order-heading"><span class="kind-icon ${email ? 'email' : ''}">${icon(order.kind)}</span><div><span class="surface-caption">OpenAI</span><h1>${type}接码</h1></div></div><span class="order-status ${esc(order.status)}"><span class="status-dot"></span>${esc(orderStatusName(order))}</span></div>${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}" id="resource-value">${esc(order.resource)}</span><button class="copy-button" type="button" id="copy-resource" aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${codeContent}${stateContent}</div><div class="order-meta"><span>${email ? '有效邮箱' : '有效号码'} ${Number(order.used_count) || 0} / ${Number(order.usage_limit) || 1}</span>${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${!finished && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span id="countdown">--:--</span></span>` : ''}</div>${!finished ? '<div class="order-progress"><span id="time-progress" style="width:100%"></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canReplace) ? queuePreferenceHTML('order-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${canCancel || canComplete || canNext || canReplace ? `<div class="order-actions">${canCancel ? `<button id="cancel-order" class="button button-ghost" type="button">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button id="complete-order" class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button id="next-code" class="button button-primary" type="button">${icon('refresh')}重试接收</button>` : ''}${canReplace ? `<button id="replace-order" class="button button-primary" type="button">${icon('arrow')}${order.status === 'completed' ? '获取下一个' : '重新获取'}</button>` : ''}</div>` : ''}<p id="order-error" class="error-text" role="alert"></p><button class="text-button order-switch" id="switch-cdk" type="button">${activeStatus(order.status) ? '使用其他 CDK' : '返回兑换'}</button>`;
+    byId('exchange').innerHTML = `<div class="card-top"><div class="order-heading"><span class="kind-icon ${email ? 'email' : ''}">${icon(order.kind)}</span><div><span class="surface-caption">OpenAI</span><h1>${type}接码</h1></div></div><span class="order-status ${esc(order.status)}"><span class="status-dot"></span>${esc(orderStatusName(order))}</span></div>${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}" id="resource-value">${esc(order.resource)}</span><button class="copy-button" type="button" id="copy-resource" aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${codeContent}${stateContent}</div><div class="order-meta"><span>${email ? '有效邮箱' : '有效号码'} ${Number(order.used_count) || 0} / ${Number(order.usage_limit) || 1}</span>${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${!finished && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span id="countdown">--:--</span></span>` : ''}</div>${!finished ? '<div class="order-progress"><span id="time-progress" style="width:100%"></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canReplace) ? queuePreferenceHTML('order-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${!email && canReplace ? '<div id="order-phone-channels" class="phone-catalog-slot"></div>' : ''}${canCancel || canComplete || canNext || canReplace ? `<div class="order-actions">${canCancel ? `<button id="cancel-order" class="button button-ghost" type="button">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button id="complete-order" class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button id="next-code" class="button button-primary" type="button">${icon('refresh')}重试接收</button>` : ''}${canReplace ? `<button id="replace-order" class="button button-primary" type="button">${icon('arrow')}${order.status === 'completed' ? '获取下一个' : '重新获取'}</button>` : ''}</div>` : ''}<p id="order-error" class="error-text" role="alert"></p><button class="text-button order-switch" id="switch-cdk" type="button">${activeStatus(order.status) ? '使用其他 CDK' : '返回兑换'}</button>`;
+    if (!email && canReplace) mountReplacementChannels(order);
     bindQueuePreference('order-queue-minutes', queued ? () => orderAction('queue-wait') : null);
     byId('copy-resource')?.addEventListener('click', () => copyText(order.resource));
     document.querySelectorAll('[data-copy-code]').forEach(button => button.addEventListener('click', () => copyText(codes[Number(button.dataset.copyCode)].code)));
@@ -409,9 +484,11 @@
     if (['replace', 'queue-wait'].includes(action)) {
       try { queueMinutes = queuePreferenceValue('order-queue-minutes'); } catch (error) { fieldError('order-error', error.message); return; }
     }
+    if (action === 'replace' && currentOrder?.kind === 'phone' && !replacementChannels?.state.selected) { fieldError('order-error', '请选择一个渠道'); replacementChannels?.focus(); return; }
     requestBusy = true; ++orderEpoch;
     const button = action === 'queue-wait' ? byId('order-queue-minutes')?.closest('.queue-preferences').querySelector('[data-save-queue]') : byId({ cancel: 'cancel-order', complete: 'complete-order', 'next-code': 'next-code', replace: 'replace-order' }[action]);
     const body = action === 'next-code' ? { round: Number(currentOrder?.mail_round) || 1 } : ['replace', 'queue-wait'].includes(action) ? { queue_minutes: queueMinutes } : {};
+    if (action === 'replace' && currentOrder?.kind === 'phone') Object.assign(body, replacementChannels.selectedBody());
     const unlock = lockControls(byId('exchange'));
     busy(button, true); fieldError('order-error', '');
     const previousOrderID = currentOrder?.id;
@@ -547,16 +624,23 @@
         adminResourceRequests[kind] = requestID;
         const minutes = Number(localStorage.getItem(`${adminRequestKey(kind)}.queue_minutes`));
         adminResourceRequestMinutes[kind] = Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440 ? minutes : null;
+        if (kind === 'phone') {
+          try { adminRequestPhoneChoice = JSON.parse(localStorage.getItem(`${adminRequestKey(kind)}.phone_choice`) || 'null'); } catch { adminRequestPhoneChoice = null; }
+        }
       }
     } catch { /* The server also restores active orders after a reload. */ }
     return adminResourceRequests[kind];
   }
-  function saveAdminRequest(kind, value, queueMinutes = null) {
+  function saveAdminRequest(kind, value, queueMinutes = null, phoneChoice = null) {
     adminResourceRequests[kind] = value;
     adminResourceRequestMinutes[kind] = value ? queueMinutes : null;
+    if (kind === 'phone') adminRequestPhoneChoice = value ? phoneChoice : null;
     try {
       if (value) localStorage.setItem(adminRequestKey(kind), value); else localStorage.removeItem(adminRequestKey(kind));
       if (value && queueMinutes != null) localStorage.setItem(`${adminRequestKey(kind)}.queue_minutes`, String(queueMinutes)); else localStorage.removeItem(`${adminRequestKey(kind)}.queue_minutes`);
+      if (kind === 'phone') {
+        if (value && phoneChoice) localStorage.setItem(`${adminRequestKey(kind)}.phone_choice`, JSON.stringify(phoneChoice)); else localStorage.removeItem(`${adminRequestKey(kind)}.phone_choice`);
+      }
     } catch { /* Keep the pending request in this page until the server confirms it. */ }
   }
   function newRequestID() {
@@ -565,6 +649,7 @@
   }
   function adminResourceTerminal(order) { return !order || ['completed', 'cancelled', 'expired', 'failed'].includes(order.status); }
   function renderAdminResources(data) {
+    adminPhoneChannels?.invalidate();
     for (const kind of ['phone', 'email']) {
       adminResources[kind] = (data.orders || []).find(order => order.kind === kind) || null;
       mailAlerts?.observe(adminResources[kind]);
@@ -588,7 +673,7 @@
     const pending = readAdminRequest(kind);
     const heading = `<div class="direct-resource-heading"><div class="order-heading"><span class="kind-icon ${email ? 'email' : ''}">${icon(kind)}</span><h2>${type}</h2></div>${order ? badge(order.status, orderStatusName(order)) : `<span class="small-flower" aria-hidden="true">${icon('star')}</span>`}</div>`;
     if (!order) {
-      card.innerHTML = `${heading}<div class="direct-resource-empty ${email ? 'email' : ''}">${icon(kind)}<span>尚未领取</span></div>${email ? queuePreferenceHTML('admin-email-queue-minutes') : ''}<button class="button button-primary direct-acquire" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
+      card.innerHTML = `${heading}<div class="direct-resource-empty ${email ? 'email' : ''}">${icon(kind)}<span>尚未领取</span></div>${email ? queuePreferenceHTML('admin-email-queue-minutes') : '<div id="admin-phone-channels" class="phone-catalog-slot"></div>'}<button class="button button-primary direct-acquire" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
     } else {
       const codes = Array.isArray(order.codes) && order.codes.length ? order.codes.filter(item => item.code) : order.code ? [{ round: 1, code: order.code }] : [];
       const round = Math.max(1, Math.min(3, Number(order.mail_round) || 1));
@@ -604,7 +689,7 @@
       const active = activeStatus(order.status);
       const waitLabel = order.status === 'allocating' ? '正在分配资源' : order.status === 'cancel_pending' ? '正在确认资源释放' : order.status === 'complete_pending' ? '正在确认接码结束' : pendingNext ? '接码状态待确认' : email ? `等待第 ${round} 封验证码` : '等待验证码';
       const history = codes.map((item, index) => `<div class="code-entry${receiptAnimation(order.id, item)}"><div class="code-entry-info">${email ? `<span class="code-round">第 ${Number(item.round) || index + 1} 封</span>` : ''}<span class="code-value ${String(item.code).length > 12 ? 'long-code' : ''}">${esc(item.code)}</span>${item.received_at ? `<time class="code-time" datetime="${esc(item.received_at)}">${formatDate(item.received_at)}</time>` : ''}</div><button class="copy-button" type="button" data-admin-copy-code="${index}" aria-label="复制${email ? `第 ${Number(item.round) || index + 1} 封` : ''}验证码">${icon('copy')}</button></div>`).join('');
-      card.innerHTML = `${heading}${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}">${esc(order.resource)}</span><button class="copy-button" type="button" data-admin-copy-resource aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${hasCode ? `<div class="code-history" aria-label="验证码记录">${history}</div>` : ''}${inQueue ? queueContent(order) : waiting ? `<div class="code-waiting ${hasCode ? 'following-code' : ''}"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span>${waitLabel}</div>` : !hasCode ? `<p class="terminal-message">${icon(order.status === 'completed' ? 'check' : 'clock')}${esc(orderStatusName(order))}</p>` : ''}</div><div class="order-meta">${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${active && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span data-admin-countdown>--:--</span></span>` : ''}</div>${active ? '<div class="order-progress"><span data-admin-progress></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canCreate) ? queuePreferenceHTML('admin-email-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}<div class="order-actions">${canCancel ? `<button class="button button-ghost" type="button" data-resource-action="cancel">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button" data-resource-action="complete">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button class="button button-primary" type="button" data-resource-action="next-code">${icon('refresh')}重试接收</button>` : ''}${canCreate ? `<button class="button button-primary" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button>` : ''}${['review', 'next_uncertain'].includes(order.status) ? '<button class="button button-ghost" type="button" data-admin-resolve>核查</button>' : ''}</div><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
+      card.innerHTML = `${heading}${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}">${esc(order.resource)}</span><button class="copy-button" type="button" data-admin-copy-resource aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${hasCode ? `<div class="code-history" aria-label="验证码记录">${history}</div>` : ''}${inQueue ? queueContent(order) : waiting ? `<div class="code-waiting ${hasCode ? 'following-code' : ''}"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span>${waitLabel}</div>` : !hasCode ? `<p class="terminal-message">${icon(order.status === 'completed' ? 'check' : 'clock')}${esc(orderStatusName(order))}</p>` : ''}</div><div class="order-meta">${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${active && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span data-admin-countdown>--:--</span></span>` : ''}</div>${active ? '<div class="order-progress"><span data-admin-progress></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canCreate) ? queuePreferenceHTML('admin-email-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${!email && canCreate ? '<div id="admin-phone-channels" class="phone-catalog-slot"></div>' : ''}<div class="order-actions">${canCancel ? `<button class="button button-ghost" type="button" data-resource-action="cancel">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button" data-resource-action="complete">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button class="button button-primary" type="button" data-resource-action="next-code">${icon('refresh')}重试接收</button>` : ''}${canCreate ? `<button class="button button-primary" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button>` : ''}${['review', 'next_uncertain'].includes(order.status) ? '<button class="button button-ghost" type="button" data-admin-resolve>核查</button>' : ''}</div><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
       card.querySelector('[data-admin-copy-resource]')?.addEventListener('click', () => copyText(order.resource));
       card.querySelectorAll('[data-admin-copy-code]').forEach(button => button.addEventListener('click', () => copyText(codes[Number(button.dataset.adminCopyCode)].code)));
       card.querySelector('[data-admin-resolve]')?.addEventListener('click', () => resolveDialog(order));
@@ -628,6 +713,7 @@
       button.disabled = adminResourceBusy[kind];
       button.addEventListener('click', () => adminResourceAction(kind, button.dataset.resourceAction));
     });
+    if (!email && adminResourceTerminal(order)) mountAdminPhoneChannels();
     updateAdminResourceCountdowns();
   }
   async function adminResourceAction(kind, action) {
@@ -637,6 +723,8 @@
     if (order?.status === 'queued' && !['cancel', 'queue-wait'].includes(action)) return;
     if (action === 'create' && !adminResourceTerminal(order)) return;
     const pendingRequest = action === 'create' ? readAdminRequest(kind) : '';
+    const phoneChoice = kind === 'phone' && action === 'create' ? pendingRequest ? adminRequestPhoneChoice || {} : adminPhoneChannels?.selectedBody() || {} : {};
+    if (kind === 'phone' && action === 'create' && !pendingRequest && (!adminPhoneChannels?.state.selected || adminPhoneChannels.state.loading)) { fieldError('admin-resource-error-phone', '请选择一个渠道'); adminPhoneChannels?.focus(); return; }
     let queueMinutes;
     if (kind === 'email' && ['create', 'queue-wait'].includes(action)) {
       try { queueMinutes = pendingRequest ? adminResourceRequestMinutes[kind] ?? undefined : queuePreferenceValue('admin-email-queue-minutes'); } catch (error) { fieldError(`admin-resource-error-${kind}`, error.message); return; }
@@ -644,22 +732,24 @@
     adminResourceBusy[kind] = true; ++adminResourceEpoch[kind]; adminResourceErrors[kind] = '';
     const generation = adminGeneration;
     let requestID = '';
-    if (action === 'create') { requestID = pendingRequest || newRequestID(); saveAdminRequest(kind, requestID, queueMinutes); }
+    if (action === 'create') { requestID = pendingRequest || newRequestID(); saveAdminRequest(kind, requestID, queueMinutes, phoneChoice); }
     const button = byId(`admin-resource-${kind}`)?.querySelector(action === 'queue-wait' ? '[data-save-queue]' : `[data-resource-action="${action}"]`);
-    byId(`admin-resource-${kind}`)?.querySelectorAll('[data-resource-action], .queue-duration-input, [data-save-queue]').forEach(el => { el.disabled = true; });
+    byId(`admin-resource-${kind}`)?.querySelectorAll('[data-resource-action], .queue-duration-input, [data-save-queue], .phone-catalog input, .phone-catalog button').forEach(el => { el.disabled = true; });
     busy(button, true); fieldError(`admin-resource-error-${kind}`, '');
     try {
       const path = action === 'create' ? '/api/admin/resources' : `/api/admin/resources/${encodeURIComponent(order.id)}/${action}`;
-      const body = action === 'create' ? { kind, request_id: requestID, ...(kind === 'email' ? { queue_minutes: queueMinutes } : {}) } : action === 'next-code' ? { round: Number(order.mail_round) || 1 } : action === 'queue-wait' ? { queue_minutes: queueMinutes } : {};
+      const body = action === 'create' ? { kind, request_id: requestID, ...(kind === 'email' ? { queue_minutes: queueMinutes } : phoneChoice) } : action === 'next-code' ? { round: Number(order.mail_round) || 1 } : action === 'queue-wait' ? { queue_minutes: queueMinutes } : {};
       const data = await api(path, { method: 'POST', body });
       if (action === 'create' && readAdminRequest(kind) === requestID) saveAdminRequest(kind, '');
       if (action === 'queue-wait') { queueDrafts.delete(`admin-email-queue-minutes:${order.id}`); notify(data.order.status === 'queued' ? '排队时间已调整' : '排队已结束'); }
       adminResources[kind] = data.order;
+      if (kind === 'phone' && action === 'create') adminPhoneChannels?.invalidate();
       mailAlerts?.observe(data.order, { freshAllocation: action === 'create' && data.order.id !== order?.id });
       if (generation === adminGeneration) renderAdminResource(kind);
       refreshInventory();
     } catch (error) {
       adminResourceErrors[kind] = error.message;
+      if (action === 'create' && [400, 422].includes(error.status)) saveAdminRequest(kind, '');
       if (generation === adminGeneration) {
         if (error.status === 401) await loadAdminAccess();
         else renderAdminResource(kind);
@@ -844,7 +934,24 @@
   function renderSettings(settings) {
     function field(name, label, extra = '') { return `<div class="field"><label for="setting-${name}">${label}</label><input id="setting-${name}" name="${name}" value="${esc(settings[name])}" ${extra}></div>`; }
     function toggle(name, label) { return `<label class="switch-label" for="setting-${name}">${label}<span class="switch"><input id="setting-${name}" type="checkbox" name="${name}" ${settings[name] ? 'checked' : ''}><span class="switch-track"></span></span></label>`; }
-    byId('main').innerHTML = `<div class="animate-in"><div class="page-title"><h1>设置</h1></div><form id="settings-form"><div class="settings-grid"><section class="panel settings-panel full"><div class="settings-section-header"><h2>${icon('shield')}服务连接</h2><span id="api-key-status" class="pill ${settings.api_configured ? 'pill-live' : 'pill-demo'}" role="status">${settings.api_configured ? '已配置' : '未配置'}</span></div><div class="field"><label for="setting-api_key">API 密钥</label><input id="setting-api_key" name="api_key" type="password" value="" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="512" placeholder="${settings.api_configured ? '已保存，输入可替换' : '输入 SMSBower API 密钥'}"></div></section><section class="panel settings-panel"><h2>${icon('phone')}手机号</h2>${toggle('phone_enabled', '开放兑换')}<div class="field-grid">${field('phone_service', '服务代码', 'required maxlength="32"')}${field('phone_country', '国家代码', 'inputmode="numeric" maxlength="5" placeholder="国家编号"')}</div><div class="field-grid">${field('phone_max_price', '价格上限', 'inputmode="decimal" maxlength="30" placeholder="生成 CDK 前必填"')}${field('phone_ttl_minutes', '本地等待（分钟）', 'type="number" min="3" max="60" required')}</div></section><section class="panel settings-panel"><h2>${icon('email')}邮箱</h2>${toggle('email_enabled', '开放兑换')}<div class="field-grid">${field('email_service', '服务代码', 'required maxlength="32"')}${field('email_domain', '邮箱域名', 'maxlength="128" placeholder="上游默认"')}</div><div class="field-grid">${field('email_max_price', '价格上限', 'inputmode="decimal" maxlength="30" placeholder="生成 CDK 前必填"')}${field('email_ttl_minutes', '本地等待（分钟）', 'type="number" min="1" max="60" required')}</div></section><section class="panel settings-panel full"><h2>${icon('image')}外观</h2><div class="field-grid">${field('brand', '站点名称', 'required maxlength="24"')}<div class="field"><label for="setting-background_type">背景</label><select id="setting-background_type" name="background_type">${[['none', '奶白色'], ['image', '图片'], ['video', '视频']].map(([value, label]) => `<option value="${value}" ${settings.background_type === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div><div class="field" id="background-url-field" ${settings.background_type === 'none' ? 'hidden' : ''}><label for="setting-background_url">媒体地址</label><input id="setting-background_url" name="background_url" value="${esc(settings.background_url)}" placeholder="https://…" maxlength="2000"></div></section></div><div class="settings-bottom"><p id="settings-error" class="error-text" role="alert"></p><span id="settings-saved" class="saved-note" role="status"></span><button type="submit" class="button button-primary">${icon('check')}保存设置</button></div></form></div>`;
+    byId('main').innerHTML = `<div class="animate-in"><div class="page-title"><h1>设置</h1></div><form id="settings-form"><div class="settings-grid"><section class="panel settings-panel full"><div class="settings-section-header"><h2>${icon('shield')}服务连接</h2><span id="api-key-status" class="pill ${settings.api_configured ? 'pill-live' : 'pill-demo'}" role="status">${settings.api_configured ? '已配置' : '未配置'}</span></div><div class="field"><label for="setting-api_key">API 密钥</label><input id="setting-api_key" name="api_key" type="password" value="" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="512" placeholder="${settings.api_configured ? '已保存，输入可替换' : '输入 SMSBower API 密钥'}"></div></section><section class="panel settings-panel"><h2>${icon('phone')}手机号</h2>${toggle('phone_enabled', '开放兑换')}<div class="field-grid">${field('phone_service', '服务代码', 'required maxlength="32"')}${field('phone_ttl_minutes', '本地等待（分钟）', 'type="number" min="3" max="60" required')}</div><div class="phone-country-editor" id="phone-country-editor"><label for="setting-phone_country">国家代码</label><div class="phone-country-entry"><input id="setting-phone_country" name="phone_country" value="${esc(settings.phone_country)}" maxlength="2000" placeholder="0, 1, 2" autocomplete="off" aria-describedby="phone-country-hint"></div><div class="phone-country-tools"><button class="button button-ghost" type="button" data-country-open aria-expanded="false" aria-controls="phone-country-panel">${icon('search')}选择国家</button><button class="button button-ghost" type="button" data-country-all aria-pressed="${settings.phone_country === '*'}">全部国家</button><span id="phone-country-hint" class="inline-note">多个代码以逗号分隔</span></div><div id="phone-country-panel" class="phone-country-panel" data-country-panel hidden><input class="phone-country-search" type="search" data-country-search placeholder="搜索国家 / 代码" aria-label="搜索国家或代码"><div class="phone-country-list" data-country-list></div><p class="phone-country-info" data-country-info role="status"></p></div></div>${field('phone_max_price', '价格上限（$）', 'inputmode="decimal" maxlength="30" placeholder="生成 CDK 前必填"')}<div id="settings-phone-channels" class="phone-catalog-slot"></div><p class="phone-preview-note">预览当前条件，保存后生效</p></section><section class="panel settings-panel"><h2>${icon('email')}邮箱</h2>${toggle('email_enabled', '开放兑换')}<div class="field-grid">${field('email_service', '服务代码', 'required maxlength="32"')}${field('email_domain', '邮箱域名', 'maxlength="128" placeholder="上游默认"')}</div><div class="field-grid">${field('email_max_price', '价格上限', 'inputmode="decimal" maxlength="30" placeholder="生成 CDK 前必填"')}${field('email_ttl_minutes', '本地等待（分钟）', 'type="number" min="1" max="60" required')}</div></section><section class="panel settings-panel full"><h2>${icon('image')}外观</h2><div class="field-grid">${field('brand', '站点名称', 'required maxlength="24"')}<div class="field"><label for="setting-background_type">背景</label><select id="setting-background_type" name="background_type">${[['none', '奶白色'], ['image', '图片'], ['video', '视频']].map(([value, label]) => `<option value="${value}" ${settings.background_type === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div><div class="field" id="background-url-field" ${settings.background_type === 'none' ? 'hidden' : ''}><label for="setting-background_url">媒体地址</label><input id="setting-background_url" name="background_url" value="${esc(settings.background_url)}" placeholder="https://…" maxlength="2000"></div></section></div><div class="settings-bottom"><p id="settings-error" class="error-text" role="alert"></p><span id="settings-saved" class="saved-note" role="status"></span><button type="submit" class="button button-primary">${icon('check')}保存设置</button></div></form></div>`;
+    phoneChannels?.countryEditor(byId('phone-country-editor'), { api });
+    const preview = phoneChannels?.catalog({ selectable: false });
+    preview?.mount(byId('settings-phone-channels'));
+    let previewTimer = null;
+    const settingsForm = byId('settings-form');
+    function previewChannels() {
+      if (!settingsForm.isConnected || !preview) return;
+      let countries;
+      try { countries = phoneChannels.countryCodes(byId('setting-phone_country').value); } catch (error) { preview.invalidate(error.message); return; }
+      const service = byId('setting-phone_service').value.trim();
+      const price = byId('setting-phone_max_price').value.trim();
+      if (!countries || !service || !price || !Number.isFinite(Number(price)) || Number(price) <= 0) { preview.invalidate('选择国家并设置价格上限'); return; }
+      const query = new URLSearchParams({ service, countries, max_price: price }).toString();
+      preview.load(() => api(`/api/admin/phone/channels?${query}`), query);
+    }
+    ['phone_country', 'phone_service', 'phone_max_price'].forEach(name => byId(`setting-${name}`).addEventListener('input', () => { clearTimeout(previewTimer); preview?.invalidate(); previewTimer = setTimeout(previewChannels, 650); }));
+    previewChannels();
     window.SystemUpdatePanel?.mount(byId('settings-form').parentElement, { api, icon, esc, notify });
     byId('setting-background_type').addEventListener('change', event => { byId('background-url-field').hidden = event.target.value === 'none'; byId('setting-background_url').required = event.target.value !== 'none'; });
     byId('settings-form').addEventListener('input', () => { byId('settings-saved').textContent = ''; });
@@ -861,6 +968,7 @@
         if (keyStatus) { keyStatus.textContent = result.api_configured ? '已配置' : '未配置'; keyStatus.className = `pill ${result.api_configured ? 'pill-live' : 'pill-demo'}`; }
         const saved = byId('settings-saved');
         if (saved) saved.textContent = '已保存';
+        adminPhoneChannels?.invalidate(); clearTimeout(previewTimer); previewChannels();
         document.querySelectorAll('.brand').forEach(el => { el.innerHTML = brandHTML(); }); refreshInventory(); notify('设置已保存');
       } catch (error) { fieldError('settings-error', error.message); } finally { busy(button, false); }
     });

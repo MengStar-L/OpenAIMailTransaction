@@ -1,0 +1,29 @@
+/* Soft menus, with one quiet surface for both the control and its options. */
+.sg-select{position:relative;display:block;width:100%;min-width:0;text-align:left}
+.sg-select>select.sg-select-source{position:absolute!important;inset:50% auto auto 0!important;width:1px!important;height:1px!important;min-height:0!important;max-height:1px!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;overflow:hidden!important;pointer-events:none!important;clip-path:inset(50%)}
+.sg-select-trigger{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;min-width:0;min-height:42px;padding:10px 13px;border:1px solid var(--line,#e6e9ec);border-radius:11px;background:#fafbfc;color:var(--ink,#424b54);font:inherit;line-height:1.6;text-align:left;box-shadow:none;transition:background .18s,border-color .18s}
+.sg-select-trigger:hover:not(:disabled){border-color:#d4dde5;background:#f7f9fb}
+.sg-select.is-open>.sg-select-trigger{border-color:#b9cad8;background:#f4f7fa}
+.sg-select-trigger:disabled{opacity:.5;cursor:not-allowed}
+.sg-select-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sg-select-arrow{width:8px;height:8px;margin:0 3px 4px;flex:none;border-right:1.5px solid #8593a1;border-bottom:1.5px solid #8593a1;transform:rotate(45deg);transition:transform .2s var(--ease,ease)}
+.sg-select.is-open .sg-select-arrow{transform:translateY(3px) rotate(225deg)}
+.sg-select-menu{position:fixed;inset:auto;z-index:1100;box-sizing:border-box;margin:0;padding:5px;max-width:calc(100vw - 20px);border:1px solid #e3e9ef;border-radius:13px;background:#fefefe;color:var(--ink,#424b54);box-shadow:0 10px 30px -14px #62778935;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#dbe3e9 transparent;font:inherit;line-height:1.6;transform-origin:top center;animation:sg-select-enter .14s var(--ease,ease)}
+.sg-select-menu[data-side=top]{transform-origin:bottom center}
+.sg-select-menu::backdrop{background:transparent;pointer-events:none}
+.sg-select-option{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:37px;padding:8px 10px;border-radius:8px;cursor:pointer;transition:background .12s,color .12s;font-size:13px}
+.sg-select-option>span:first-child{min-width:0;overflow-wrap:anywhere}
+.sg-select-option[aria-selected=true]{background:#f1f5f8;color:#526f87}
+.sg-select-option.is-active:not([aria-disabled=true]){background:#eaf1f6;color:#425e77}
+.sg-select-option[aria-disabled=true]{color:#a5adb5;cursor:not-allowed}
+.sg-select-check{width:11px;height:6px;flex:none;margin-right:2px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;opacity:0;transform:translateY(-2px) rotate(-45deg)}
+.sg-select-option[aria-selected=true] .sg-select-check{opacity:1}
+.sg-select-group{padding:10px 10px 5px;color:#8996a4;font-size:11px;letter-spacing:.5px}
+.sg-select-group:not(:first-child){margin-top:3px;border-top:1px solid #f0f3f6}
+.sg-select-empty{padding:12px 10px;color:var(--muted,#68717b);font-size:12px;text-align:center}
+.cdk-toolbar>.sg-select{width:120px;flex:none}
+.cdk-toolbar .sg-select-trigger{min-height:35px;height:35px;padding:6px 9px;border-radius:9px;font-size:12px}
+@keyframes sg-select-enter{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:scale(1)}}
+@media(max-width:680px){.cdk-toolbar>.sg-select{width:98px}.cdk-toolbar .sg-select-trigger{font-size:11px;gap:8px}.sg-select-option{min-height:42px}}
+@media(max-width:390px){.settings-panel .sg-select-trigger{padding-inline:10px;font-size:12px}}
+@media(prefers-reduced-motion:reduce){.sg-select-menu{animation:none}.sg-select-trigger,.sg-select-arrow,.sg-select-option{transition:none}}

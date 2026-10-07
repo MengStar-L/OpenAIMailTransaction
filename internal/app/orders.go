@@ -17,6 +17,7 @@ func (a *App) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
+		phoneSelection
 		CDK          string `json:"cdk"`
 		QueueMinutes *int   `json:"queue_minutes"`
 	}
@@ -55,12 +56,12 @@ func (a *App) redeem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.redeemLocked(w, c, queueMinutes)
+	a.redeemLocked(w, c, queueMinutes, in.phoneSelection)
 }
 
 // The caller holds providerGate and the voucher lock. A voucher owns at most
 // one unsettled activation, regardless of how many successful uses remain.
-func (a *App) redeemLocked(w http.ResponseWriter, c CDK, queueMinutes int) {
+func (a *App) redeemLocked(w http.ResponseWriter, c CDK, queueMinutes int, choice phoneSelection) {
 	if c.Status == "disabled" {
 		fail(w, 409, "兑换码已停用")
 		return
@@ -96,15 +97,25 @@ func (a *App) redeemLocked(w http.ResponseWriter, c CDK, queueMinutes int) {
 		ttl = time.Duration(c.Snapshot.EmailTTLMinutes) * time.Minute
 	}
 	request := provider.Request{Kind: c.Kind, TTL: ttl}
+	var selectedChannel *provider.PhoneChannel
 	if c.Kind == "phone" {
-		request.Service = c.Snapshot.PhoneService
-		request.Country = c.Snapshot.PhoneCountry
-		request.MaxPrice = c.Snapshot.PhoneMaxPrice
+		var err error
+		request, selectedChannel, err = a.selectedPhoneRequest(c.Snapshot, choice)
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
 	} else {
 		request.Service = c.Snapshot.EmailService
 		request.Domain = c.Snapshot.EmailDomain
 		request.MaxPrice = c.Snapshot.EmailMaxPrice
 	}
+	// A live channel lookup can outlast the remaining voucher lifetime.
+	if !time.Now().Before(c.ExpiresAt) {
+		fail(w, 410, "兑换码已过期")
+		return
+	}
+	now = time.Now().UTC()
 	o := Order{ID: randomString(12), CDKID: c.ID, Kind: c.Kind, Status: "allocating", CreatedAt: now, ExpiresAt: now.Add(ttl), CancelAfter: now, Attempt: c.Attempts + 1, MaxAttempts: c.MaxAttempts, MailRound: 1, Codes: []ReceivedCode{}, Message: "正在申请资源"}
 	if c.Kind == "email" {
 		o.QueueMinutes = queueMinutes
@@ -131,6 +142,10 @@ func (a *App) redeemLocked(w http.ResponseWriter, c CDK, queueMinutes int) {
 		return
 	}
 	if err = insertAllocationQueue(tx, o, request); err != nil {
+		a.databaseError(w, err)
+		return
+	}
+	if err = insertPhoneChannel(tx, o.ID, selectedChannel); err != nil {
 		a.databaseError(w, err)
 		return
 	}
@@ -167,6 +182,7 @@ func (a *App) replaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
+		phoneSelection
 		QueueMinutes *int `json:"queue_minutes"`
 	}
 	// Older clients submit an empty body for replacement.
@@ -200,7 +216,7 @@ func (a *App) replaceOrder(w http.ResponseWriter, r *http.Request) {
 		a.databaseError(w, err)
 		return
 	}
-	a.redeemLocked(w, c, queueMinutes)
+	a.redeemLocked(w, c, queueMinutes, in.phoneSelection)
 }
 
 func (a *App) nextCode(w http.ResponseWriter, r *http.Request) {

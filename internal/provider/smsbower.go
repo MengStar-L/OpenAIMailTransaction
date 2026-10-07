@@ -68,8 +68,7 @@ func validateRequest(req Request) bool {
 	}
 	switch req.Kind {
 	case "phone":
-		_, err := strconv.ParseUint(req.Country, 10, 32)
-		return err == nil
+		return validCatalogID(req.Country, true) && (req.ProviderID == "" || validCatalogID(req.ProviderID, false))
 	case "email":
 		return req.Domain != "" && len(req.Domain) <= 253 && !strings.ContainsAny(req.Domain, " /\\\r\n\t@?#&")
 	default:
@@ -147,6 +146,9 @@ func (s *SMSBower) Allocate(ctx context.Context, req Request) (Activation, error
 		path = "/stubs/handler_api.php"
 		values.Set("action", "getNumberV2")
 		values.Set("country", req.Country)
+		if req.ProviderID != "" {
+			values.Set("providerIds", req.ProviderID)
+		}
 	} else {
 		values.Set("domain", req.Domain)
 		values.Set("alias", "0")

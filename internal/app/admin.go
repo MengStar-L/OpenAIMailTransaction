@@ -297,8 +297,8 @@ func validateSettings(s Settings) error {
 	if !servicePattern.MatchString(s.PhoneService) || !servicePattern.MatchString(s.EmailService) {
 		return errors.New("服务代码无效")
 	}
-	if s.PhoneCountry != "" && !countryPattern.MatchString(s.PhoneCountry) {
-		return errors.New("国家代码应为数字")
+	if _, err := normalizePhoneCountries(s.PhoneCountry); err != nil {
+		return err
 	}
 	if s.EmailDomain != "" && !domainPattern.MatchString(s.EmailDomain) {
 		return errors.New("邮箱域名无效")
@@ -340,6 +340,12 @@ func (a *App) putSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := in.Settings
+	normalizedCountries, err := normalizePhoneCountries(s.PhoneCountry)
+	if err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	s.PhoneCountry = normalizedCountries
 	if err := validateSettings(s); err != nil {
 		fail(w, 400, err.Error())
 		return
@@ -371,7 +377,6 @@ func (a *App) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	client := a.currentClient()
 	var encrypted string
-	var err error
 	if changed {
 		client, err = a.configuredClient(key)
 		if err != nil {

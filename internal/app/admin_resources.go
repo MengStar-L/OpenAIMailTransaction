@@ -73,6 +73,7 @@ func (a *App) latestAdminResource(kind string) (Order, error) {
 
 func (a *App) allocateAdminResource(w http.ResponseWriter, r *http.Request) {
 	var in struct {
+		phoneSelection
 		Kind         string `json:"kind"`
 		RequestID    string `json:"request_id"`
 		QueueMinutes *int   `json:"queue_minutes"`
@@ -140,6 +141,14 @@ func (a *App) allocateAdminResource(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := time.Duration(s.PhoneTTLMinutes) * time.Minute
 	request := provider.Request{Kind: in.Kind, Service: s.PhoneService, Country: s.PhoneCountry, MaxPrice: s.PhoneMaxPrice}
+	var selectedChannel *provider.PhoneChannel
+	if in.Kind == "phone" {
+		request, selectedChannel, err = a.selectedPhoneRequest(s, in.phoneSelection)
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+	}
 	if in.Kind == "email" {
 		ttl = time.Duration(s.EmailTTLMinutes) * time.Minute
 		request.Service, request.Domain, request.Country, request.MaxPrice = s.EmailService, s.EmailDomain, "", s.EmailMaxPrice
@@ -162,6 +171,9 @@ func (a *App) allocateAdminResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		err = insertAllocationQueue(tx, o, request)
+	}
+	if err == nil {
+		err = insertPhoneChannel(tx, o.ID, selectedChannel)
 	}
 	if err == nil {
 		err = tx.Commit()

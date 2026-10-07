@@ -50,6 +50,8 @@ type App struct {
 	inventoryMu            sync.Mutex
 	inventoryCache         inventoryCache
 	allocationObservations map[[4]string]allocationObservation
+	phoneCatalogMu         sync.Mutex
+	phoneCatalogCache      map[[4]string]phoneCatalogCache
 	log                    *log.Logger
 	secret                 []byte
 	settings               Settings
@@ -152,6 +154,9 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	a.settings = defaultSettings()
+	if opts.Mode == "demo" {
+		a.settings.PhoneCountry, a.settings.PhoneMaxPrice = "*", "0.30"
+	}
 	var settingsJSON string
 	err = db.QueryRow("SELECT value FROM settings WHERE id=1").Scan(&settingsJSON)
 	if err == nil {

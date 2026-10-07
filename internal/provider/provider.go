@@ -46,6 +46,7 @@ type EmailInventory struct {
 
 type Request struct {
 	Kind, Service, Country, Domain, MaxPrice string
+	ProviderID                               string
 	TTL                                      time.Duration
 }
 
