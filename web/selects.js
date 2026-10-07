@@ -323,7 +323,7 @@
   }
 
   function schedulePosition(event) {
-    if (!openRecord || openRecord.popup.contains(event?.target) || positionFrame) return;
+    if (!openRecord || event?.target instanceof Node && openRecord.popup.contains(event.target) || positionFrame) return;
     positionFrame = requestAnimationFrame(() => {
       positionFrame = 0;
       if (openRecord) position(openRecord);

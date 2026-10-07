@@ -135,6 +135,23 @@ if (!chromium) {
     } finally { await tab.close(); }
   });
 
+  test('an open menu follows window/visual viewport resize without treating Window as a DOM node', async () => {
+    const tab = await page(`<label for="resize-select">筛选</label><select id="resize-select">${choices}</select>`);
+    const errors = [];
+    tab.on('pageerror', error => errors.push(error.message));
+    try {
+      await tab.getByRole('combobox').click();
+      await tab.setViewportSize({ width: 320, height: 500 });
+      await tab.evaluate(() => {
+        window.dispatchEvent(new Event('resize'));
+        window.visualViewport?.dispatchEvent(new Event('resize'));
+      });
+      await tab.waitForFunction(() => document.querySelector('.sg-select-menu').getBoundingClientRect().right <= innerWidth);
+      assert.deepEqual(errors, []);
+      assert.equal(await tab.getByRole('combobox').getAttribute('aria-expanded'), 'true');
+    } finally { await tab.close(); }
+  });
+
   test('repeated page replacement cleans detached popovers without duplicating controls or observer loops', async () => {
     const tab = await page(`<div id="dynamic"><select aria-label="筛选">${choices}</select></div>`);
     try {
