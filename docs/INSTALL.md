@@ -16,7 +16,7 @@ sudo bash install.sh
 可以固定版本、自定义 `/opt` 下的目录，或关闭首次安装的自动更新：
 
 ```bash
-sudo bash install.sh --version v1.0.0 --dir /opt/shiguang --no-auto-update
+sudo bash install.sh --version v1.0.1 --dir /opt/shiguang --no-auto-update
 ```
 
 首次管理员设置建议通过 SSH 隧道访问。在自己电脑上运行：
@@ -61,7 +61,7 @@ Linux 安装脚本部署的服务支持后台自动更新。二进制目录由�
 
 ```bash
 sudo bash install.sh
-sudo bash install.sh --version v1.0.0
+sudo bash install.sh --version v1.0.1
 ```
 
 手动脚本升级会先完成下载和校验，再停止服务、备份配置和整个数据目录、替换程序并检查健康状态。更新偏好保存在 `data/live/update-settings.json`，后续安装不会重置。
@@ -95,10 +95,10 @@ sudo systemctl start shiguang
 维护者推送 `v主版本.次版本.补丁版本` tag 后，GitHub Actions 自动测试、编译、打包，再发布 Release：
 
 ```bash
-git tag -a v1.0.1 -m "v1.0.1"
-git push origin v1.0.1
+git tag -a v1.0.2 -m "v1.0.2"
+git push origin v1.0.2
 ```
 
-发布平台包括 Linux amd64 / arm64、Windows amd64、macOS amd64 / arm64。归档名称如 `shiguang_1.0.0_linux_amd64.tar.gz`，归档内包含程序、README、安装文档及配置示例；Release 同时提供 `install.sh` 和 `checksums.txt`。构建失败不会发布；上传完全部文件后才将草稿转为正式版本。已发布版本不覆盖，修正应使用新 tag。
+发布平台包括 Linux amd64 / arm64、Windows amd64、macOS amd64 / arm64。归档名称如 `shiguang_1.0.1_linux_amd64.tar.gz`，归档内包含程序、README、安装文档及配置示例；Release 同时提供 `install.sh` 和 `checksums.txt`。构建失败不会发布；上传完全部文件后才将草稿转为正式版本。已发布版本不覆盖，修正应使用新 tag。
 
 在 Actions 手动运行该工作流仅生成构建产物，不创建正式 Release。
