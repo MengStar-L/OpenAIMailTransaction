@@ -109,6 +109,7 @@ func run() error {
 		if r.URL.Path != "/styles.css" && r.URL.Path != "/app.js" &&
 			r.URL.Path != "/mail-alerts.css" && r.URL.Path != "/mail-alerts.js" &&
 			r.URL.Path != "/system-updates.js" && r.URL.Path != "/system-updates.css" &&
+			r.URL.Path != "/admin-balance.js" && r.URL.Path != "/admin-balance.css" &&
 			r.URL.Path != "/selects.js" && r.URL.Path != "/selects.css" &&
 			r.URL.Path != "/phone-channels.js" && r.URL.Path != "/phone-channels.css" &&
 			r.URL.Path != "/assets/ZCOOLKuaiLe-Regular.woff2" &&

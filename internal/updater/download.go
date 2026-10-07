@@ -191,6 +191,11 @@ func (m *Manager) downloadRelease(ctx context.Context, release releaseInfo, dir 
 	if archive.Size <= 0 || archive.Size > maxArchiveSize || checksums.Size <= 0 || checksums.Size > maxMetadataSize {
 		return "", "", fmt.Errorf("更新附件大小无效")
 	}
+	// The release metadata supplies a reliable total even when the asset host
+	// streams a chunked response without Content-Length.
+	m.mu.Lock()
+	m.state.TotalBytes = archive.Size
+	m.mu.Unlock()
 	data, err := m.get(ctx, checksums.URL, maxMetadataSize)
 	if err != nil {
 		return "", "", err
@@ -213,12 +218,16 @@ func (m *Manager) downloadRelease(ctx context.Context, release releaseInfo, dir 
 		return "", "", fmt.Errorf("无法保存安装包")
 	}
 	hash := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, maxArchiveSize+1))
+	writer := &downloadProgressWriter{writer: io.MultiWriter(file, hash), manager: m}
+	n, copyErr := io.Copy(writer, io.LimitReader(response.Body, maxArchiveSize+1))
 	syncErr := file.Sync()
 	closeErr := file.Close()
 	if copyErr != nil || syncErr != nil || closeErr != nil {
 		return "", "", fmt.Errorf("下载安装包失败")
 	}
+	m.mu.Lock()
+	m.state.Phase = "verifying"
+	m.mu.Unlock()
 	if n != archive.Size || n > maxArchiveSize {
 		return "", "", fmt.Errorf("安装包大小不一致")
 	}
@@ -226,6 +235,24 @@ func (m *Manager) downloadRelease(ctx context.Context, release releaseInfo, dir 
 		return "", "", fmt.Errorf("安装包 SHA256 校验失败，未安装")
 	}
 	return archivePath, digest, nil
+}
+
+// Report only acknowledged writes, rather than bytes merely read from the
+// network. io.Copy writes bounded chunks, so polling State does not contend
+// with a mutex acquisition for each individual byte.
+type downloadProgressWriter struct {
+	writer  io.Writer
+	manager *Manager
+}
+
+func (w *downloadProgressWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if n > 0 {
+		w.manager.mu.Lock()
+		w.manager.state.DownloadedBytes += int64(n)
+		w.manager.mu.Unlock()
+	}
+	return n, err
 }
 
 func safeArchiveName(name string) bool {

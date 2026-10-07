@@ -1,0 +1,15 @@
+/* Administrator-only account balance, alongside the inventory indicator. */
+#admin-balance-slot{display:contents}
+.admin-balance{min-width:0;max-width:100%;gap:6px;color:#607b88;background:#f1f6f7;border:1px solid #dfeaec;line-height:1.4;box-shadow:none;transition:background .2s,border-color .2s}
+.admin-balance:hover{background:#eaf2f4;border-color:#d1e0e5}
+.admin-balance>svg{width:14px;height:14px;flex:none;color:#7b98a4}
+.admin-balance strong{max-width:15ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-variant-numeric:tabular-nums;color:#547380}
+.admin-balance [data-balance-label]{white-space:nowrap}
+.admin-balance[aria-busy=true]>svg{opacity:.6;animation:balance-breathe 1.6s ease-in-out infinite}
+.admin-balance.balance-unavailable{color:#878b8f;background:#f6f7f8;border-color:#e7e9ec}
+.admin-balance.balance-unavailable strong{color:inherit}
+.balance-demo{padding-left:6px;border-left:1px solid #d5e1e7;color:#7b8d95;font-size:9px;white-space:nowrap}
+@keyframes balance-breathe{50%{opacity:1}}
+@media(max-width:680px){.admin-topbar:has(.admin-balance){flex-wrap:wrap;gap:9px}.admin-topbar:has(.admin-balance)>.header-actions{max-width:100%;width:100%;flex-wrap:wrap;justify-content:flex-end}.admin-topbar .admin-balance{padding:5px 7px;font-size:9px;gap:5px;min-height:27px}.admin-topbar .admin-balance strong{font-size:10px}.admin-topbar .admin-balance>svg{width:12px;height:12px}.admin-topbar .balance-demo{font-size:8px;padding-left:4px}}
+@media(max-width:390px){.admin-topbar .admin-balance{font-size:8px;gap:4px}.admin-topbar .admin-balance strong{font-size:9px;max-width:13ch}.admin-topbar .admin-balance>svg{display:none}.admin-topbar .balance-demo{font-size:8px}}
+@media(prefers-reduced-motion:reduce){.admin-balance{transition:none}.admin-balance[aria-busy=true]>svg{animation:none}}

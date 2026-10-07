@@ -105,5 +105,8 @@ func (a *App) applyUpdate(w http.ResponseWriter, r *http.Request) {
 		_, _ = a.opts.Updates.Apply(ctx)
 	}()
 	state.Phase = "downloading"
+	state.Error = ""
+	state.DownloadedBytes = 0
+	state.TotalBytes = 0
 	respond(w, http.StatusAccepted, state)
 }

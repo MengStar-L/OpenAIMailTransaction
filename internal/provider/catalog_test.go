@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPhoneCountriesNamesAndShapes(t *testing.T) {
@@ -54,7 +55,8 @@ func TestPhoneChannelsExactFilteringAndDocumentedQueries(t *testing.T) {
 			 "107":{"price":0.1,"count":2147483648,"provider_id":107},
 			 "108":{"price":0.1,"count":3,"provider_id":108,"tier":3},
 			 "109":{"price":0.1,"count":3,"provider_id":109,"rank":"bronze"},
-			 "110":{"price":0.1,"count":3,"provider_id":110,"quality":"diamond"}
+			 "110":{"price":0.1,"count":3,"provider_id":110,"quality":"diamond"},
+			 "111":{"price":0.1,"count":3,"provider_id":111}
 			}},
 			"187":{"dr":{"200":{"price":"0.149","count":5,"provider_id":"200"}}},
 			"1":{"dr":{"300":{"price":0.01,"count":99,"provider_id":300}}}
@@ -76,12 +78,13 @@ func TestPhoneChannelsExactFilteringAndDocumentedQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []PhoneChannel{
-		{"36", "加拿大", "108", "0.1", 3, "unknown"},
-		{"36", "加拿大", "109", "0.1", 3, "bronze"},
-		{"36", "加拿大", "110", "0.1", 3, "unknown"},
-		{"187", "美国", "200", "0.149", 5, "gold"},
-		{"36", "加拿大", "102", "0.14999999", 2, "silver"},
-		{"36", "加拿大", "100", "0.15000000", 4, "gold"},
+		{"36", "加拿大", "100", "0.15000000", 4, "gold", "provided"},
+		{"36", "加拿大", "102", "0.14999999", 2, "silver", "provided"},
+		{"187", "美国", "200", "0.149", 5, "gold", "provided"},
+		{"36", "加拿大", "108", "0.1", 3, "unknown", "unavailable"},
+		{"36", "加拿大", "109", "0.1", 3, "bronze", "provided"},
+		{"36", "加拿大", "110", "0.1", 3, "unknown", "unavailable"},
+		{"36", "加拿大", "111", "0.1", 3, "unknown", "not_provided"},
 	}
 	if !reflect.DeepEqual(got, want) || prices.Load() != 1 || countryCalls.Load() != 1 || topCalls.Load() != 1 {
 		t.Fatalf("channels = %+v; want %+v; calls=%d,%d,%d", got, want, prices.Load(), countryCalls.Load(), topCalls.Load())
@@ -100,7 +103,7 @@ func TestPhoneChannelsSingleCountryAndOptionalMetadataFailure(t *testing.T) {
 		}
 	})
 	got, err := client.PhoneChannels(context.Background(), phoneRequest())
-	if err != nil || len(got) != 1 || got[0].CountryName != "187" || got[0].Tier != "unknown" {
+	if err != nil || len(got) != 1 || got[0].CountryName != "187" || got[0].Tier != "unknown" || got[0].TierStatus != "unavailable" {
 		t.Fatalf("valid quotes must survive metadata outage: %+v, %v", got, err)
 	}
 }
@@ -187,6 +190,91 @@ func TestGoldEnrichmentNeverGuessCountryOrDemoteMissing(t *testing.T) {
 	addGoldPhoneTiers(channels, []byte(`{"canada":{"42":{"price":0.1,"count":1},"43":{"price":0.1,"count":1}},"ambiguous":{"44":{"price":0.1,"count":1}}}`), countries)
 	if channels[0].Tier != "gold" || channels[1].Tier != "unknown" || channels[2].Tier != "bronze" || channels[3].Tier != "unknown" {
 		t.Fatalf("unproven quality inferred: %+v", channels)
+	}
+}
+
+func TestPhoneRatingDistinguishesMissingFromMetadataFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, goldBody, unknownStatus string
+		goldHTTP                      int
+	}{
+		{"partial valid list", `{"united-states":{"99":{"price":0.1,"count":3}}}`, "not_provided", 200},
+		{"valid empty list", `{}`, "not_provided", 200},
+		{"network failure", ``, "unavailable", 503},
+		{"unrecognized response", `{"status":true}`, "unavailable", 200},
+		{"upstream error", `{"error":"BAD_SERVICE"}`, "unavailable", 200},
+		{"country mapping missing", `{"unmapped-country":{"42":{"price":0.1,"count":3}}}`, "unavailable", 200},
+		{"malformed provider", `{"united-states":{"42":{"cost":0.1}}}`, "unavailable", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Query().Get("action") {
+				case "getPricesV3":
+					fmt.Fprint(w, `{"187":{"dr":{"42":{"provider_id":42,"price":0.1,"count":3},"43":{"provider_id":43,"price":0.1,"count":3,"tier":"silver"}}}}`)
+				case "getCountries":
+					fmt.Fprint(w, `{"187":{"id":187,"eng":"United States","chn":"美国"}}`)
+				case "getTopCountriesByService":
+					w.WriteHeader(tc.goldHTTP)
+					fmt.Fprint(w, tc.goldBody)
+				default:
+					t.Error("metadata lookup issued unexpected action")
+				}
+			})
+			got, err := client.PhoneChannels(context.Background(), phoneRequest())
+			if err != nil || len(got) != 2 {
+				t.Fatalf("metadata failure hid valid quotes: %+v, %v", got, err)
+			}
+			if got[0].Tier != "unknown" || got[0].TierStatus != tc.unknownStatus || got[1].Tier != "silver" || got[1].TierStatus != "provided" {
+				t.Fatalf("rating source lost: %+v", got)
+			}
+		})
+	}
+}
+
+func TestPhoneCountryMetadataCannotConsumeGoldRequestBudget(t *testing.T) {
+	countryStarted, goldStarted := make(chan struct{}), make(chan struct{})
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("action") {
+		case "getPricesV3":
+			fmt.Fprint(w, `{"187":{"dr":{"42":{"provider_id":42,"price":0.1,"count":3}}}}`)
+		case "getCountries":
+			close(countryStarted)
+			select {
+			case <-goldStarted:
+				fmt.Fprint(w, `{"187":{"id":187,"eng":"United States","chn":"美国"}}`)
+			case <-r.Context().Done():
+			}
+		case "getTopCountriesByService":
+			select {
+			case <-countryStarted:
+				close(goldStarted)
+				fmt.Fprint(w, `{"united-states":{"42":{"price":0.1,"count":3}}}`)
+			case <-r.Context().Done():
+			}
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	got, err := client.PhoneChannels(ctx, phoneRequest())
+	if err != nil || len(got) != 1 || got[0].Tier != "gold" || got[0].TierStatus != "provided" || got[0].CountryName != "美国" {
+		t.Fatalf("country lookup prevented independent Gold enrichment: %+v, %v", got, err)
+	}
+}
+
+func TestNumericGoldCountrySurvivesCountryNameOutage(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("action") {
+		case "getPricesV3":
+			fmt.Fprint(w, `{"187":{"dr":{"42":{"provider_id":42,"price":0.1,"count":3}}}}`)
+		case "getCountries":
+			http.Error(w, "country lookup unavailable", 503)
+		case "getTopCountriesByService":
+			fmt.Fprint(w, `{"187":{"42":{"price":0.1,"count":3}}}`)
+		}
+	})
+	got, err := client.PhoneChannels(context.Background(), phoneRequest())
+	if err != nil || len(got) != 1 || got[0].Tier != "gold" || got[0].TierStatus != "provided" || got[0].CountryName != "187" {
+		t.Fatalf("numeric country rating depends on optional names: %+v, %v", got, err)
 	}
 }
 

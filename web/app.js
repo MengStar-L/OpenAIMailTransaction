@@ -551,6 +551,8 @@
   }
 
   function renderAdminEntry(content) {
+    window.SystemUpdatePanel?.stop();
+    window.AdminBalance?.stop();
     stopAdminResources(); stopInventory();
     adminResources.phone = null; adminResources.email = null;
     mailAlerts?.clearAttention();
@@ -597,11 +599,13 @@
     });
   }
   function renderAdminShell() {
-    app.innerHTML = `<div class="admin-shell"><aside class="sidebar"><a class="brand" href="/">${brandHTML()}</a><nav class="admin-nav" aria-label="管理导航"><button class="nav-item" data-tab="overview" title="总览">${icon('grid')}<span>总览</span></button><button class="nav-item" data-tab="resources" title="接码">${icon('inbox')}<span>接码</span></button><button class="nav-item" data-tab="cdks" title="CDK">${icon('ticket')}<span>CDK</span></button><button class="nav-item" data-tab="settings" title="设置">${icon('settings')}<span>设置</span></button></nav><div class="sidebar-footer"><a href="/" class="nav-item" title="兑换页">${icon('external')}<span>兑换页</span></a><button id="logout" class="nav-item" title="退出登录">${icon('logout')}<span>退出登录</span></button></div></aside><div class="admin-content"><header class="admin-topbar resource-topbar"><span class="topbar-title">${icon('star')}管理空间</span><div class="header-actions">${inventoryPill()}${modePill()}${reminderHTML()}</div></header><main id="main"><div class="empty loading-state"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>加载中</span></div></main></div></div>`;
+    app.innerHTML = `<div class="admin-shell"><aside class="sidebar"><a class="brand" href="/">${brandHTML()}</a><nav class="admin-nav" aria-label="管理导航"><button class="nav-item" data-tab="overview" title="总览">${icon('grid')}<span>总览</span></button><button class="nav-item" data-tab="resources" title="接码">${icon('inbox')}<span>接码</span></button><button class="nav-item" data-tab="cdks" title="CDK">${icon('ticket')}<span>CDK</span></button><button class="nav-item" data-tab="settings" title="设置">${icon('settings')}<span>设置</span></button></nav><div class="sidebar-footer"><a href="/" class="nav-item" title="兑换页">${icon('external')}<span>兑换页</span></a><button id="logout" class="nav-item" title="退出登录">${icon('logout')}<span>退出登录</span></button></div></aside><div class="admin-content"><header class="admin-topbar resource-topbar"><span class="topbar-title">${icon('star')}管理空间</span><div class="header-actions">${inventoryPill()}<span id="admin-balance-slot"></span>${modePill()}${reminderHTML()}</div></header><main id="main"><div class="empty loading-state"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>加载中</span></div></main></div></div>`;
     document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => showAdminTab(button.dataset.tab)));
     async function logout() { try { await api('/api/admin/logout', { method: 'POST', body: {} }); renderLogin(); } catch (error) { notify(error.message, true); } }
     byId('logout').addEventListener('click', logout);
     bindReminders(); startInventory();
+    window.SystemUpdatePanel?.start({ api, icon, esc, notify });
+    window.AdminBalance?.start(byId('admin-balance-slot'), { api });
     if (adminTab !== 'resources') restoreAdminArrivalWatch();
   }
   async function restoreAdminArrivalWatch() {
@@ -769,6 +773,7 @@
       mailAlerts?.observe(data.order, { freshAllocation: action === 'create' && data.order.id !== order?.id });
       if (generation === adminGeneration) renderAdminResource(kind);
       refreshInventory();
+      window.AdminBalance?.refresh(true);
     } catch (error) {
       adminResourceErrors[kind] = error.message;
       if (action === 'create' && [400, 422].includes(error.status)) saveAdminRequest(kind, '');
@@ -818,6 +823,7 @@
       mailAlerts?.observe(data.order);
       if (changed) renderAdminResource(kind);
       else { fieldError(`admin-resource-error-${kind}`, ''); updateAdminResourceCountdowns(); }
+      if (previous?.status !== data.order.status || previous?.resource !== data.order.resource) window.AdminBalance?.refresh(true);
       if (previous && queueClock(previous) && !queueClock(data.order)) { refreshInventory(); announce(orderStatusName(data.order)); }
     } catch (error) {
       if (generation !== adminGeneration || epoch !== adminResourceEpoch[kind]) return;
@@ -854,7 +860,7 @@
     openDialog('核查订单', `<p class="dialog-body">请先在上游确认资源的实际状态。</p><p class="inline-note" style="margin-top:12px;overflow-wrap:anywhere">上游编号：${esc(order.provider_id || '—')}<br>资源：${esc(order.resource || '—')}</p><form id="resolve-form"><div class="resolution-choices"><label class="resolution-choice"><input type="radio" name="resolution" value="released" required ${hasReceipt ? 'disabled' : ''}><span><strong>已释放</strong><span>${order.source === 'admin' ? (hasReceipt ? '本资源已收码' : '确认资源已释放') : (hasReceipt ? '本资源已收码，不可恢复额度' : '未收码不扣额度')}</span></span></label><label class="resolution-choice"><input type="radio" name="resolution" value="consumed" required><span><strong>已消耗</strong><span>${order.source === 'admin' ? '结束本次资源' : (hasReceipt ? '结束资源，已用额度不重复扣除' : '计入 1 个有效资源')}</span></span></label></div><p id="resolve-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" class="button button-ghost" data-close>取消</button><button type="submit" class="button button-primary">确认处理</button></div></form>`, () => {
       byId('resolve-form').addEventListener('submit', async event => {
         event.preventDefault(); const button = event.currentTarget.querySelector('[type="submit"]'); busy(button, true); fieldError('resolve-error', '');
-        try { await api(`/api/admin/orders/${encodeURIComponent(order.id)}/resolve`, { method: 'POST', body: { resolution: new FormData(event.currentTarget).get('resolution') } }); closeDialog(); notify('订单已处理'); showAdminTab('overview'); }
+        try { await api(`/api/admin/orders/${encodeURIComponent(order.id)}/resolve`, { method: 'POST', body: { resolution: new FormData(event.currentTarget).get('resolution') } }); closeDialog(); notify('订单已处理'); window.AdminBalance?.refresh(true); showAdminTab('overview'); }
         catch (error) { fieldError('resolve-error', error.message); } finally { busy(button, false); }
       });
     });
@@ -990,7 +996,7 @@
         const saved = byId('settings-saved');
         if (saved) saved.textContent = '已保存';
         adminPhoneChannels?.invalidate(); clearTimeout(previewTimer); previewChannels();
-        document.querySelectorAll('.brand').forEach(el => { el.innerHTML = brandHTML(); }); refreshInventory(); notify('设置已保存');
+        document.querySelectorAll('.brand').forEach(el => { el.innerHTML = brandHTML(); }); refreshInventory(); window.AdminBalance?.refresh(true); notify('设置已保存');
       } catch (error) { fieldError('settings-error', error.message); } finally { busy(button, false); }
     });
   }

@@ -22,10 +22,31 @@ test('catalog sorting does not invent quality tiers or accept malformed channel 
   const api = moduleAPI();
   const values = api.normalizeChannels([channel(), channel(), channel('1', '2', { tier: 'premium', price: '0.05' }), channel('2', '3', { tier: 'gold' }), channel('0', 'bad'), channel('0', '4', { price: 'NaN' })]);
   assert.equal(values.length, 3);
-  assert.equal(values[0].tier, 'unknown');
-  assert.equal(values[2].tier, 'gold');
-  assert.deepEqual(clone(api.selectionBody(values[0])), { phone_country: '1', phone_provider_id: '2' });
+  assert.equal(values[0].tier, 'bronze');
+  assert.equal(values[1].tier, 'gold');
+  assert.equal(values[2].tier, 'unknown');
+  assert.deepEqual(clone(api.selectionBody(values[2])), { phone_country: '1', phone_provider_id: '2' });
   assert.equal(Object.hasOwn(api.selectionBody(values[0]), 'price'), false);
+});
+
+test('channel prices descend across countries and ties keep a stable country/provider order', () => {
+  const api = moduleAPI();
+  const input = [channel('1', '2', { price: '0.15' }), channel('0', '3', { price: '0.20' }), channel('0', '2', { price: '0.15' }), channel('0', '1', { price: '0.15' })];
+  for (const values of [input, [...input].reverse()]) {
+    assert.deepEqual(clone(api.normalizeChannels(values).map(row => [row.country, row.provider_id, row.price])), [['0', '3', '0.20'], ['0', '1', '0.15'], ['0', '2', '0.15'], ['1', '2', '0.15']]);
+  }
+});
+
+test('rating badges distinguish upstream omissions from temporary lookup failure without inventing tiers', () => {
+  const api = moduleAPI();
+  const missing = api.tierDetails(channel('0', '1', { tier: 'unknown', tier_status: 'not_provided' }));
+  const unavailable = api.tierDetails(channel('0', '1', { tier: 'unknown', tier_status: 'unavailable' }));
+  assert.equal(missing.label, '未评级');
+  assert.match(missing.description, /上游接口未提供/);
+  assert.equal(unavailable.label, '评级暂缺');
+  assert.match(unavailable.description, /刷新重试/);
+  assert.equal(unavailable.unavailable, true);
+  assert.equal(api.tierDetails(channel('0', '1', { tier: 'gold', tier_status: 'unavailable' })).label, '日冕', 'explicit upstream quality survives optional metadata errors');
 });
 
 test('a stale CDK response cannot replace a newer channel list', async () => {

@@ -7,3 +7,50 @@
 .update-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:2px}
 .update-note{margin-top:12px}
 @media(max-width:480px){.update-preferences{grid-template-columns:1fr;gap:0}.update-panel .settings-section-header{gap:10px}.update-actions .button{flex:1}}
+
+/* A quiet, persistent view of a real update. The native dialog manages focus. */
+.update-dialog{width:440px;padding:34px 30px 24px;border-color:#e0e7ec;border-radius:25px;background:#fffefd;text-align:center;box-shadow:0 24px 80px #53657724}
+.update-dialog::backdrop{background:#53616f35;backdrop-filter:blur(6px)}
+.update-dialog-close{position:absolute;top:16px;right:16px;width:31px;height:31px;border:0;background:#f5f7f9;color:#84909c}
+.update-dialog-close:hover{background:#edf1f4}
+.update-emblem{position:relative;width:90px;height:90px;margin:0 auto 15px;display:grid;place-items:center;border-radius:50%;background:radial-gradient(circle,#f5f8fb,#fbfaf700 73%)}
+.update-emblem:before{content:'';position:absolute;inset:0;border:1px solid #e4ebf0;border-top-color:#94acbc;border-radius:50%;animation:update-orbit 3s linear infinite}
+.update-emblem img{width:72px;height:72px;object-fit:contain}
+.update-emblem-star{position:absolute;right:-1px;top:5px;display:grid;place-items:center;width:23px;height:23px;background:#fffefd;border-radius:50%;color:#bca883}
+.update-emblem-star svg{width:17px;height:17px;fill:#faf4e8;animation:update-twinkle 2.5s ease-in-out infinite}
+.update-dialog-eyebrow{color:#7a8791;font-size:11px;margin-bottom:5px}
+.update-dialog h2{font-size:25px;line-height:1.5;font-weight:400}
+.update-dialog-version{font-size:12px;color:#798592;margin-top:4px;min-height:20px;overflow-wrap:anywhere}
+.update-stages{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));list-style:none;margin:26px 0 25px;padding:0;gap:2px;font-size:10px;color:#84909a}
+.update-stages li{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px}
+.update-stages li+li:before{content:'';position:absolute;top:12px;right:calc(50% + 17px);width:calc(100% - 32px);height:1px;background:#e7edf1}
+.update-stages li>span{position:relative;z-index:1;display:grid;place-items:center;width:25px;height:25px;border:1px solid #e3e9ee;border-radius:9px;background:#fbfcfd;transition:background .24s,border-color .24s,color .24s}
+.update-stages li.is-active{color:#4e6c82}
+.update-stages li.is-active>span{background:#eaf1f6;border-color:#bbcdda;color:#4e6c82}
+.update-stages li.is-complete>span{background:#f0f5f2;border-color:#dce7df;color:#628573}
+.update-transfer{text-align:left;min-height:43px}
+.update-transfer-heading{display:flex;align-items:center;justify-content:space-between;gap:9px;font-size:11px;color:#718394;line-height:1.5;min-height:19px}
+.update-transfer-heading>span:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.update-progress{display:block;width:100%;height:6px;margin-top:9px;appearance:none;border:0;border-radius:9px;background:#eef2f5;overflow:hidden;color:#a5bdce}
+.update-progress::-webkit-progress-bar{background:#eef2f5;border-radius:9px}
+.update-progress::-webkit-progress-value{background:#a5bdce;border-radius:9px;transition:width .3s ease}
+.update-progress::-moz-progress-bar{background:#a5bdce;border-radius:9px}
+.update-progress:not([value]){background:linear-gradient(90deg,#eef2f5 20%,#b8ccda 50%,#eef2f5 80%);background-size:250% 100%;animation:update-sweep 2.4s ease-in-out infinite}
+.update-progress:not([value])::-webkit-progress-bar{background:transparent}
+.update-dialog-detail{font-size:12px;line-height:1.7;color:#78848e;min-height:39px;margin:7px 0 20px;overflow-wrap:anywhere}
+.update-dialog-actions{display:flex;justify-content:center;gap:9px}
+.update-dialog-actions .button{flex:1;min-height:41px;font-size:12px;padding:10px 15px;box-shadow:none;transform:none}
+.update-dialog-footnote{font-size:10px;color:#87929a;margin-top:11px;min-height:16px}
+.update-dialog[data-phase=success] .update-emblem:before{animation:none;border-color:#dce9df}
+.update-dialog[data-phase=success] .update-progress::-webkit-progress-value{background:#aac4b1}
+.update-dialog:is([data-phase=error],[data-phase=login],[data-phase=deferred],[data-phase=unconfirmed]) .update-emblem:before{animation:none;border-color:#e8e4dd}
+.update-dialog[data-phase=error] .update-dialog-detail{color:var(--error)}
+.update-reopen{position:fixed;z-index:45;right:24px;bottom:25px;display:flex;align-items:center;gap:8px;padding:11px 15px;border:1px solid #dbe5ed;border-radius:14px;background:#f8fbfd;color:#607c91;box-shadow:0 5px 24px #6d849217;font:inherit;font-size:12px;animation:dialog-enter .2s var(--ease)}
+.update-reopen svg{width:15px;height:15px}
+.update-reopen:hover{background:#eff5f9}
+@keyframes update-orbit{to{transform:rotate(360deg)}}
+@keyframes update-twinkle{50%{opacity:.55;transform:scale(.86)}}
+@keyframes update-sweep{0%,100%{background-position:100% 0}50%{background-position:0 0}}
+@media(max-width:680px){.update-reopen{bottom:calc(87px + env(safe-area-inset-bottom));right:17px}}
+@media(max-width:480px){.update-dialog{padding:29px 23px 20px}.update-stages{margin-block:23px}.update-dialog h2{font-size:23px}.update-transfer-heading{font-size:10px}.update-dialog-actions .button{padding-inline:10px}}
+@media(prefers-reduced-motion:reduce){.update-dialog,.update-reopen,.update-emblem:before,.update-emblem-star svg,.update-progress:not([value]){animation:none}.update-stages li>span{transition:none}.update-progress::-webkit-progress-value{transition:none}}

@@ -48,10 +48,12 @@ jobs:
           node --check web/app.js
           node --check web/mail-alerts.js
           node --check web/system-updates.js
+          node --check web/admin-balance.js
           node --check web/selects.js
           node --check web/phone-channels.js
           node --test tests/mail-alerts.test.cjs
           node --test tests/system-updates.test.cjs
+          node --test tests/admin-balance.test.cjs
           node --test tests/selects.test.cjs
           node --test tests/phone-channels.test.cjs
           node --test tests/resource-actions.test.cjs

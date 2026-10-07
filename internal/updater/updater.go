@@ -24,16 +24,18 @@ type Settings struct {
 }
 
 type State struct {
-	CurrentVersion string    `json:"current_version"`
-	LatestVersion  string    `json:"latest_version,omitempty"`
-	Repository     string    `json:"repository"`
-	ReleaseURL     string    `json:"release_url,omitempty"`
-	Available      bool      `json:"available"`
-	Supported      bool      `json:"supported"`
-	Phase          string    `json:"phase"`
-	Error          string    `json:"error,omitempty"`
-	LastChecked    time.Time `json:"last_checked,omitempty"`
-	Settings       Settings  `json:"settings"`
+	CurrentVersion  string    `json:"current_version"`
+	LatestVersion   string    `json:"latest_version,omitempty"`
+	Repository      string    `json:"repository"`
+	ReleaseURL      string    `json:"release_url,omitempty"`
+	Available       bool      `json:"available"`
+	Supported       bool      `json:"supported"`
+	Phase           string    `json:"phase"`
+	DownloadedBytes int64     `json:"downloaded_bytes"`
+	TotalBytes      int64     `json:"total_bytes"`
+	Error           string    `json:"error,omitempty"`
+	LastChecked     time.Time `json:"last_checked,omitempty"`
+	Settings        Settings  `json:"settings"`
 }
 
 type Options struct {
@@ -204,6 +206,8 @@ func (m *Manager) begin(phase string) error {
 	m.busy = true
 	m.state.Phase = phase
 	m.state.Error = ""
+	m.state.DownloadedBytes = 0
+	m.state.TotalBytes = 0
 	return nil
 }
 
@@ -294,9 +298,6 @@ func (m *Manager) Apply(ctx context.Context) (State, error) {
 	if err != nil {
 		return m.applyFail(err)
 	}
-	m.mu.Lock()
-	m.state.Phase = "verifying"
-	m.mu.Unlock()
 	candidate, err := extractBinary(archive, dir, runtime.GOOS)
 	if err != nil {
 		return m.applyFail(err)

@@ -28,6 +28,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/session", a.admin(func(w http.ResponseWriter, r *http.Request) { respond(w, 200, map[string]bool{"authenticated": true}) }))
 	mux.HandleFunc("POST /api/admin/logout", a.admin(a.logout))
 	mux.HandleFunc("GET /api/admin/overview", a.admin(a.overview))
+	mux.HandleFunc("GET /api/admin/balance", a.admin(a.adminBalance))
 	mux.HandleFunc("GET /api/admin/resources", a.admin(a.listAdminResources))
 	mux.HandleFunc("POST /api/admin/resources", a.admin(a.allocateAdminResource))
 	mux.HandleFunc("GET /api/admin/resources/{id}", a.adminResourceAction(a.currentOrder))

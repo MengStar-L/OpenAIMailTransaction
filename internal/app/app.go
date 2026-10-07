@@ -49,6 +49,8 @@ type App struct {
 	providerGate           sync.RWMutex
 	inventoryMu            sync.Mutex
 	inventoryCache         inventoryCache
+	balanceMu              sync.Mutex
+	balanceCache           balanceCache
 	allocationObservations map[[4]string]allocationObservation
 	phoneCatalogMu         sync.Mutex
 	phoneCatalogCache      map[[4]string]phoneCatalogCache

@@ -21,7 +21,12 @@
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    }).map(channel => ({ ...channel, country: String(channel.country), provider_id: String(channel.provider_id), tier: Object.hasOwn(tiers, channel.tier) ? channel.tier : 'unknown' })).sort((left, right) => Number(left.price) - Number(right.price) || left.country.localeCompare(right.country) || left.provider_id.localeCompare(right.provider_id));
+    }).map(channel => ({ ...channel, country: String(channel.country), provider_id: String(channel.provider_id), tier: Object.hasOwn(tiers, channel.tier) ? channel.tier : 'unknown' })).sort((left, right) => Number(right.price) - Number(left.price) || left.country.localeCompare(right.country) || left.provider_id.localeCompare(right.provider_id));
+  }
+  function tierDetails(channel) {
+    if (Object.hasOwn(tiers, channel.tier)) return { label: tiers[channel.tier], description: `上游评级：${({ bronze: 'Bronze', silver: 'Silver', gold: 'Gold' })[channel.tier]}`, unavailable: false };
+    if (channel.tier_status === 'unavailable') return { label: '评级暂缺', description: '评级信息暂未获取成功，或返回格式无法识别；可刷新重试。渠道价格和库存已获取。', unavailable: true };
+    return { label: '未评级', description: '上游接口未提供该渠道的评级，不能据此判断铜、银、金等级。', unavailable: false };
   }
   function selectionBody(channel) { return channel ? { phone_country: String(channel.country), phone_provider_id: String(channel.provider_id) } : {}; }
   const refreshIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5m-4.4-4a8 8 0 0 1 13.2-3L20 8M4 16l2.2 3A8 8 0 0 0 19.4 16"/></svg>';
@@ -71,7 +76,7 @@
       const target = host.querySelector('.phone-catalog-list');
       if (!target) return;
       const search = filter.trim().toLocaleLowerCase();
-      const filtered = state.channels.filter(channel => !search || `${channel.country_name || ''} ${channel.country} ${channel.provider_id} ${tiers[channel.tier] || '未评级'}`.toLocaleLowerCase().includes(search));
+      const filtered = state.channels.filter(channel => !search || `${channel.country_name || ''} ${channel.country} ${channel.provider_id} ${tierDetails(channel).label}`.toLocaleLowerCase().includes(search));
       const pages = Math.max(1, Math.ceil(filtered.length / size));
       page = Math.min(page, pages);
       const items = filtered.slice((page - 1) * size, page * size);
@@ -79,7 +84,8 @@
         const chosen = state.selected && keyFor(state.selected) === keyFor(channel);
         const count = channel.count == null || channel.count === '' ? '余量未知' : Number(channel.count) === -1 || channel.count === 'few' ? '参考少量' : Number.isFinite(Number(channel.count)) ? `参考余量 ${new Intl.NumberFormat('zh-CN').format(Math.max(0, Number(channel.count)))}` : '余量未知';
         const noStock = channel.count != null && channel.count !== '' && Number(channel.count) === 0;
-        return `<${selectable ? 'label' : 'div'} class="phone-channel-row${chosen ? ' selected' : ''}${noStock ? ' unavailable' : ''}">${selectable ? `<input type="radio" name="${id}" value="${escape(keyFor(channel))}" ${chosen ? 'checked' : ''} ${state.loading || noStock ? 'disabled' : ''} aria-label="${escape(channel.country_name || channel.country)}，渠道 ${escape(channel.provider_id)}，${escape(tiers[channel.tier] || '未评级')}，${escape(channel.price)} 美元">` : ''}<span class="phone-channel-country"><strong>${escape(channel.country_name || `国家 ${channel.country}`)}</strong><small>${escape(channel.country)} · #${escape(channel.provider_id)}</small></span><span class="phone-tier ${channel.tier}"><span aria-hidden="true">${channel.tier === 'gold' ? '☀' : channel.tier === 'silver' ? '☾' : channel.tier === 'bronze' ? '✧' : '·'}</span>${tiers[channel.tier] || '未评级'}</span><span class="phone-channel-cost"><strong>$${escape(channel.price)}</strong><small>${escape(count)}</small></span></${selectable ? 'label' : 'div'}>`;
+        const tier = tierDetails(channel);
+        return `<${selectable ? 'label' : 'div'} class="phone-channel-row${chosen ? ' selected' : ''}${noStock ? ' unavailable' : ''}">${selectable ? `<input type="radio" name="${id}" value="${escape(keyFor(channel))}" ${chosen ? 'checked' : ''} ${state.loading || noStock ? 'disabled' : ''} aria-label="${escape(channel.country_name || channel.country)}，渠道 ${escape(channel.provider_id)}，${escape(tier.label)}，${escape(channel.price)} 美元">` : ''}<span class="phone-channel-country"><strong>${escape(channel.country_name || `国家 ${channel.country}`)}</strong><small>${escape(channel.country)} · #${escape(channel.provider_id)}</small></span><span class="phone-tier ${channel.tier}${tier.unavailable ? ' unavailable' : ''}" title="${escape(tier.description)}"><span aria-hidden="true">${channel.tier === 'gold' ? '☀' : channel.tier === 'silver' ? '☾' : channel.tier === 'bronze' ? '✧' : '·'}</span>${escape(tier.label)}</span><span class="phone-channel-cost"><strong>$${escape(channel.price)}</strong><small>${escape(count)}</small></span></${selectable ? 'label' : 'div'}>`;
       }).join('');
       if (state.loaded && state.channels.length && !items.length) target.innerHTML = '<div class="phone-channel-empty">没有匹配的渠道</div>';
       target.querySelectorAll('input[type="radio"]').forEach(input => input.addEventListener('change', () => {
@@ -196,5 +202,5 @@
     input.form?.addEventListener('submit', event => { try { input.value = countryCodes(input.value); } catch (error) { event.preventDefault(); event.stopImmediatePropagation(); input.setCustomValidity(error.message); input.reportValidity(); } }, true);
     paint();
   }
-  window.PhoneChannels = { catalog, countryEditor, countryCodes, normalizeChannels, selectionBody };
+  window.PhoneChannels = { catalog, countryEditor, countryCodes, normalizeChannels, selectionBody, tierDetails };
 })();

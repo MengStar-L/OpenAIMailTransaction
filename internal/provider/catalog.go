@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -31,6 +32,7 @@ type PhoneChannel struct {
 	Price       string `json:"price"`
 	Count       int    `json:"count"`
 	Tier        string `json:"tier"`
+	TierStatus  string `json:"tier_status"`
 }
 
 type catalogCountry struct {
@@ -156,15 +158,19 @@ func (s *SMSBower) PhoneCountries(ctx context.Context) ([]PhoneCountry, error) {
 	return result, nil
 }
 
-func explicitPhoneTier(row map[string]json.RawMessage) string {
+func explicitPhoneTier(row map[string]json.RawMessage) (string, string) {
 	// Never infer quality from price, stock, numeric ranks, or missing fields.
+	status := "not_provided"
 	for _, field := range []string{"tier", "rank", "quality"} {
 		switch tier := strings.ToLower(strings.TrimSpace(stringValue(row[field]))); tier {
 		case "bronze", "silver", "gold":
-			return tier
+			return tier, "provided"
+		case "", "unknown":
+		default:
+			status = "unavailable"
 		}
 	}
-	return "unknown"
+	return "unknown", status
 }
 
 func parsePhoneChannels(body []byte, req Request, limit *big.Rat, allowed map[string]bool, countries []catalogCountry) ([]PhoneChannel, error) {
@@ -233,7 +239,8 @@ func parsePhoneChannels(body []byte, req Request, limit *big.Rat, allowed map[st
 			if name == "" {
 				name = countryID
 			}
-			channels = append(channels, PhoneChannel{Country: countryID, CountryName: name, ProviderID: providerID, Price: priceText, Count: int(count), Tier: explicitPhoneTier(row)})
+			tier, tierStatus := explicitPhoneTier(row)
+			channels = append(channels, PhoneChannel{Country: countryID, CountryName: name, ProviderID: providerID, Price: priceText, Count: int(count), Tier: tier, TierStatus: tierStatus})
 		}
 	}
 	sortPhoneChannels(channels)
@@ -245,7 +252,7 @@ func sortPhoneChannels(channels []PhoneChannel) {
 		a, _ := new(big.Rat).SetString(channels[i].Price)
 		b, _ := new(big.Rat).SetString(channels[j].Price)
 		if n := a.Cmp(b); n != 0 {
-			return n < 0
+			return n > 0
 		}
 		if channels[i].Country != channels[j].Country {
 			return channels[i].Country < channels[j].Country
@@ -266,33 +273,51 @@ func countrySlug(name string) string {
 	}, strings.ToLower(name)), "-")
 }
 
-func addGoldPhoneTiers(channels []PhoneChannel, body []byte, countries []catalogCountry) {
+func addGoldPhoneTiers(channels []PhoneChannel, body []byte, countries []catalogCountry) error {
 	// The documented top-countries endpoint only identifies Gold providers in
 	// a partial country list. Missing entries remain unknown, never Bronze.
 	top, ok := decodeObject(body)
 	if !ok {
-		return
+		return invalidResponse(false)
+	}
+	if _, hasError := top["error"]; hasError {
+		return invalidResponse(false)
 	}
 	aliases := make(map[string]string)
 	for _, c := range countries {
 		aliases[c.ID] = c.ID
 		if slug := countrySlug(c.English); slug != "" {
-			aliases[slug] = c.ID
+			if previous, exists := aliases[slug]; exists && previous != c.ID {
+				aliases[slug] = ""
+			} else {
+				aliases[slug] = c.ID
+			}
 		}
 	}
 	gold := make(map[string]bool)
+	var metadataErr error
 	for alias, raw := range top {
 		country := aliases[alias]
+		if validCatalogID(alias, true) {
+			country = alias
+		}
 		if country == "" {
+			metadataErr = invalidResponse(false)
 			continue
 		}
 		providers, ok := decodeObject(raw)
 		if !ok {
+			metadataErr = invalidResponse(false)
 			continue
 		}
 		for id, rawProvider := range providers {
 			provider, ok := decodeObject(rawProvider)
-			if !ok || !validCatalogID(id, false) || !pricePattern.MatchString(stringValue(provider["price"])) || !validCatalogID(stringValue(provider["count"]), false) {
+			if !ok || !validCatalogID(id, false) || !pricePattern.MatchString(stringValue(provider["price"])) || !validCatalogID(stringValue(provider["count"]), true) {
+				metadataErr = invalidResponse(false)
+				continue
+			}
+			if explicitID, exists := provider["provider_id"]; exists && stringValue(explicitID) != id {
+				metadataErr = invalidResponse(false)
 				continue
 			}
 			gold[country+":"+id] = true
@@ -301,8 +326,10 @@ func addGoldPhoneTiers(channels []PhoneChannel, body []byte, countries []catalog
 	for i := range channels {
 		if channels[i].Tier == "unknown" && gold[channels[i].Country+":"+channels[i].ProviderID] {
 			channels[i].Tier = "gold"
+			channels[i].TierStatus = "provided"
 		}
 	}
+	return metadataErr
 }
 
 func (s *SMSBower) PhoneChannels(ctx context.Context, req Request) ([]PhoneChannel, error) {
@@ -322,18 +349,44 @@ func (s *SMSBower) PhoneChannels(ctx context.Context, req Request) ([]PhoneChann
 	if err != nil {
 		return nil, err
 	}
-	// Country names and Gold enrichment are optional metadata. A metadata
-	// outage must not hide otherwise valid, purchasable channel quotes.
-	metaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	countries, _ := s.phoneCountries(metaCtx)
-	channels, err := parsePhoneChannels(body, req, limit, allowed, countries)
+	channels, err := parsePhoneChannels(body, req, limit, allowed, nil)
 	if err != nil || len(channels) == 0 {
 		return channels, err
 	}
-	goldBody, err := s.request(metaCtx, "/stubs/handler_api.php", url.Values{"action": {"getTopCountriesByService"}, "service": {req.Service}}, false)
-	if err == nil {
-		addGoldPhoneTiers(channels, goldBody, countries)
+	// Fetch optional metadata in parallel with independent deadlines. Slow
+	// country names must not consume the entire Gold request's time budget.
+	var countries []catalogCountry
+	var goldBody []byte
+	var goldErr error
+	var metadata sync.WaitGroup
+	metadata.Add(2)
+	go func() {
+		defer metadata.Done()
+		metaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		countries, _ = s.phoneCountries(metaCtx)
+	}()
+	go func() {
+		defer metadata.Done()
+		metaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		goldBody, goldErr = s.request(metaCtx, "/stubs/handler_api.php", url.Values{"action": {"getTopCountriesByService"}, "service": {req.Service}}, false)
+	}()
+	metadata.Wait()
+	names := make(map[string]string, len(countries))
+	for _, c := range countries {
+		names[c.ID] = c.Name
+	}
+	if goldErr == nil {
+		goldErr = addGoldPhoneTiers(channels, goldBody, countries)
+	}
+	for i := range channels {
+		if name := names[channels[i].Country]; name != "" {
+			channels[i].CountryName = name
+		}
+		if channels[i].Tier == "unknown" && goldErr != nil {
+			channels[i].TierStatus = "unavailable"
+		}
 	}
 	return channels, nil
 }
@@ -365,7 +418,7 @@ func (d *Demo) PhoneChannels(ctx context.Context, req Request) ([]PhoneChannel, 
 			if price.Cmp(limit) > 0 {
 				continue
 			}
-			channels = append(channels, PhoneChannel{Country: country.ID, CountryName: country.Name, ProviderID: strconv.Itoa(1001 + index), Price: prices[index], Count: 128 - index*24, Tier: tier})
+			channels = append(channels, PhoneChannel{Country: country.ID, CountryName: country.Name, ProviderID: strconv.Itoa(1001 + index), Price: prices[index], Count: 128 - index*24, Tier: tier, TierStatus: "provided"})
 		}
 	}
 	sortPhoneChannels(channels)
