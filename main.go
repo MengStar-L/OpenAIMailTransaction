@@ -49,7 +49,7 @@ func run() error {
 		return err
 	}
 	mode := env("APP_MODE", "demo")
-	addr := env("LISTEN_ADDR", "127.0.0.1:8080")
+	addr := env("LISTEN_ADDR", "0.0.0.0:8080")
 	dataDir := env("DATA_DIR", filepath.Join("data", mode))
 	updateShutdown := make(chan struct{}, 1)
 	var application *app.App

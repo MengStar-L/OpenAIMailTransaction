@@ -47,7 +47,7 @@ go run .
 
 ```dotenv
 APP_MODE=live
-LISTEN_ADDR=127.0.0.1:8080
+LISTEN_ADDR=0.0.0.0:8080
 DATA_DIR=data/live
 SMSBOWER_API_BASE=https://smsbower.page
 COOKIE_SECURE=false
@@ -122,7 +122,7 @@ go build -trimpath -ldflags="-s -w" -o bin/atelier.exe .
 
 Linux 上将构建输出改为 `bin/atelier` 即可。运行文件已包含页面资源；部署时保留可执行文件、对应配置及持久化数据目录。运行账户需要写入 `DATA_DIR` 的权限。
 
-公网访问应放在 HTTPS 反向代理后，将 `COOKIE_SECURE=true`，保留原始 `Host` 请求头，并让程序监听仅代理可访问的地址。`TRUSTED_PROXIES` 可填逗号分隔的真实代理 CIDR，用于从 `X-Forwarded-For` 识别客户端 IP；直连时保持为空，不应将所有网络设为可信。程序本身提供 HTTP，不负责申请 TLS 证书。
+默认监听 `0.0.0.0:8080`，可通过 `http://服务器IP:8080` 访问。使用 HTTPS 反向代理时可自行改为仅代理可访问的监听地址，将 `COOKIE_SECURE=true`，并保留原始 `Host` 请求头。`TRUSTED_PROXIES` 可填逗号分隔的真实代理 CIDR，用于从 `X-Forwarded-For` 识别客户端 IP；直连时保持为空。程序本身提供 HTTP，不负责申请 TLS 证书。
 
 管理员会话使用 HttpOnly、SameSite=Strict Cookie；订单访问令牌保存在浏览器当前标签页的 `sessionStorage` 中。程序重启后需要重新登录后台。CDK 和订单令牌均应像凭据一样妥善保管。
 
@@ -145,7 +145,7 @@ docker compose -p atelier-demo logs -f
 docker compose -p atelier-live up -d --build
 ```
 
-切换前停止使用相同主机端口的旧实例。Compose 将端口绑定到主机 `127.0.0.1:8080`，并将容器数据目录固定为 `/data`，保存在项目对应的命名卷中；它会覆盖 `.env` 的 `LISTEN_ADDR` 和 `DATA_DIR`。备份应停止容器后复制完整数据卷。`docker compose down` 保留数据卷，追加 `-v` 会删除数据。
+切换前停止使用相同主机端口的旧实例。Compose 将端口绑定到主机 `0.0.0.0:8080`，并将容器数据目录固定为 `/data`，保存在项目对应的命名卷中；它会覆盖 `.env` 的 `LISTEN_ADDR` 和 `DATA_DIR`。备份应停止容器后复制完整数据卷。`docker compose down` 保留数据卷，追加 `-v` 会删除数据。
 
 Docker 文件已提供，本次未实际运行容器构建与部署验证。
 

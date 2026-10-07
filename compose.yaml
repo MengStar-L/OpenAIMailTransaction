@@ -2,7 +2,7 @@ services:
   atelier:
     build: .
     ports:
-      - "127.0.0.1:8080:8080"
+      - "0.0.0.0:8080:8080"
     env_file: .env
     environment:
       LISTEN_ADDR: :8080

@@ -5,7 +5,9 @@ import http.cookiejar
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -18,7 +20,8 @@ ROOT = Path("/opt/shiguang-ci")
 WORK = Path(os.environ["SHIGUANG_SMOKE_DIR"])
 assert str(WORK).startswith("/tmp/shiguang-ci-smoke.")
 REPO = "MengStar-L/OpenAIMailTransaction"
-BASE = "http://127.0.0.1:18080"
+BASE = os.environ.get("SHIGUANG_SMOKE_BASE", "http://127.0.0.1:8080")
+assert BASE in ("http://127.0.0.1:8080", "http://127.0.0.1:18081")
 PASSWORD = "ci-only-installation-smoke-password"
 FAKE_KEY = "ci-only-unused-provider-key"
 COOKIE_JAR = http.cookiejar.CookieJar()
@@ -80,7 +83,7 @@ def curl_shim(arguments):
     urls = [argument for argument in arguments if argument.startswith(("https://", "http://"))]
     assert len(urls) == 1, "Unexpected installer curl invocation"
     url = urls[0]
-    if url.startswith(BASE + "/"):
+    if any(url.startswith(base + "/") for base in ("http://127.0.0.1:8080", "http://127.0.0.1:18081")):
         os.execv("/usr/bin/curl", ["curl", *arguments])
     if url == f"https://github.com/{REPO}/releases/latest":
         assert "%{url_effective}" in arguments
@@ -101,6 +104,7 @@ def curl_shim(arguments):
 
 
 def initialize():
+    assert_listening("0.0.0.0:8080")
     assert api("/api/admin/bootstrap")["setup_required"] is True
     assert json.loads((ROOT / "data/live/update-settings.json").read_text()) == {"auto_check": True, "auto_update": True}
     api("/api/admin/setup", {"password": PASSWORD, "confirm_password": PASSWORD})
@@ -128,13 +132,29 @@ def initialize():
     assert api("/api/admin/bootstrap")["setup_required"] is False
 
 
-def unchanged():
+def assert_listening(address):
+    host, port = address.rsplit(":", 1)
+    expected = socket.inet_aton(host)[::-1].hex().upper() + f":{int(port):04X}"
+    listeners = [line.split()[1] for line in Path("/proc/net/tcp").read_text().splitlines()[1:]
+                 if line.split()[3] == "0A"]
+    assert expected in listeners, f"Service is not listening on {address}"
+    assert re.search(r"(?m)^LISTEN_ADDR=" + re.escape(address) + r"$", (ROOT / ".env").read_text())
+
+
+def unchanged(expected_listen=None):
     expected = json.loads((WORK / "expected.json").read_text())
+    if expected_listen is not None:
+        previous = (WORK / "expected.env").read_text()
+        changed = re.sub(r"(?m)^LISTEN_ADDR=.*$", "LISTEN_ADDR=" + expected_listen, previous)
+        assert changed != previous, "Explicit listening-address fixture must actually change the address"
+        expected["config"] = digest(changed.encode())
     assert state() == expected, "Existing settings, credentials, database or update preferences changed"
 
 
-def verify():
-    unchanged()
+def verify(expected_listen=None, backup_count=1):
+    unchanged(expected_listen)
+    previous_listen = re.search(r"(?m)^LISTEN_ADDR=(.*)$", (WORK / "expected.env").read_text()).group(1)
+    assert_listening(expected_listen or previous_listen)
     assert api("/api/admin/bootstrap")["setup_required"] is False
     api("/api/admin/login", {"password": PASSWORD})
     settings = api("/api/admin/settings")
@@ -143,12 +163,12 @@ def verify():
     items = api("/api/admin/cdks")["items"]
     assert sorted(item["code"] for item in items) == json.loads((WORK / "codes.json").read_text())
     assert all(item["usage_limit"] == 3 for item in items)
-    backups = list((ROOT / "backups").iterdir())
-    assert len(backups) == 1, "Expected exactly one successful upgrade backup"
-    backup = backups[0]
+    backups = sorted((ROOT / "backups").iterdir(), key=lambda path: path.stat().st_mtime_ns)
+    assert len(backups) == backup_count, "Expected one backup for each successful upgrade"
+    backup = backups[-1]
     assert (backup / "data/live/atelier.db").is_file()
     assert (backup / "data/live/secret.key").read_bytes() == (ROOT / "data/live/secret.key").read_bytes()
-    assert (backup / ".env").read_bytes() == (ROOT / ".env").read_bytes()
+    assert (backup / ".env").read_bytes() == (WORK / "expected.env").read_bytes()
     assert (ROOT / "bin/shiguang.previous").is_file()
     assert (ROOT / "bin/shiguang").stat().st_uid != 0
     assert (ROOT / ".env").stat().st_uid == 0
@@ -165,9 +185,11 @@ elif command == "initialize":
     initialize()
 elif command == "capture":
     (WORK / "expected.json").write_text(json.dumps(state()))
+    shutil.copyfile(ROOT / ".env", WORK / "expected.env")
 elif command == "unchanged":
     unchanged()
 elif command == "verify":
-    verify()
+    verify(sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != "preserve" else None,
+           int(sys.argv[3]) if len(sys.argv) > 3 else 1)
 else:
     raise SystemExit("Unknown smoke phase")

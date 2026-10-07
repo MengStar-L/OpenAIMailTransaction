@@ -3,7 +3,9 @@
 set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 installer="$script_dir/install.sh"
-bash "$installer" --help >/dev/null
+help_text="$(bash "$installer" --help)"
+[[ "$help_text" == *'0.0.0.0:8080'* ]]
+[[ "$help_text" == *'显式 --listen'* ]]
 expect_rejected() {
   if bash "$installer" "$@" >/dev/null 2>&1; then
     printf 'Expected rejection: %s\n' "$*" >&2
@@ -12,6 +14,7 @@ expect_rejected() {
 }
 expect_rejected --unknown
 expect_rejected --version
+expect_rejected --listen
 expect_rejected --version '../main'
 expect_rejected --version 'v1.2.3;echo unsafe'
 expect_rejected --dir /

@@ -11,25 +11,25 @@ curl -fL https://github.com/MengStar-L/OpenAIMailTransaction/releases/latest/dow
 sudo bash install.sh
 ```
 
-安装脚本下载对应架构的正式 Release，并校验 `checksums.txt` 中的 SHA-256 后安装。默认监听 `127.0.0.1:8080`，首次安装开启自动检查和自动更新。
+安装脚本下载对应架构的正式 Release，并校验 `checksums.txt` 中的 SHA-256 后安装。默认监听 `0.0.0.0:8080`，首次安装开启自动检查和自动更新。
 
 可以固定版本、自定义 `/opt` 下的目录，或关闭首次安装的自动更新：
 
 ```bash
-sudo bash install.sh --version v1.0.1 --dir /opt/shiguang --no-auto-update
+sudo bash install.sh --version v1.0.2 --dir /opt/shiguang --no-auto-update
 ```
 
-首次管理员设置建议通过 SSH 隧道访问。在自己电脑上运行：
+安装后打开 `http://服务器IP:8080/admin` 设置管理员密码，再在后台设置中填写 SMSBower API 密钥、价格等参数。密码和 API 密钥不写进安装脚本或 `.env`。
+
+已有安装若仍只监听本机，重新运行脚本并显式指定地址：
 
 ```bash
-ssh -L 8080:127.0.0.1:8080 root@服务器IP
+sudo bash install.sh --listen 0.0.0.0:8080
 ```
 
-打开 `http://127.0.0.1:8080/admin`，设置管理员密码，再在后台设置中填写 SMSBower API 密钥、价格等参数。密码和 API 密钥不写进安装脚本或 `.env`。
+`--listen` 同样可用于指定其他地址或端口。使用 HTTPS 反向代理时可设置 `--listen 127.0.0.1:8080`，并在 `/opt/shiguang/.env` 将 `COOKIE_SECURE=true`、设置实际代理的 `TRUSTED_PROXIES` 后重启服务。反向代理应保留 `Host`，转发 `X-Forwarded-For` 与 `X-Forwarded-Proto`。安装脚本不修改防火墙、不申请证书。
 
-需要直接监听服务器网卡时，首次安装可添加 `--listen 0.0.0.0:8080`，访问 `http://服务器IP:8080/admin`。使用 HTTPS 反向代理时保留默认监听地址；在 `/opt/shiguang/.env` 将 `COOKIE_SECURE=true`，设置实际代理的 `TRUSTED_PROXIES`，并重启服务。反向代理应保留 `Host`，转发 `X-Forwarded-For` 与 `X-Forwarded-Proto`。安装脚本不修改防火墙、不申请证书。
-
-再次执行安装脚本属于升级：保留已有 `.env`、管理员、API 密钥、CDK、订单及更新偏好，`--listen` 与 `--no-auto-update` 不覆盖已有配置。
+再次执行安装脚本属于升级：保留管理员、API 密钥、CDK、订单及更新偏好。未指定 `--listen` 时保留已有监听地址；显式指定时只修改 `.env` 的 `LISTEN_ADDR`。`--no-auto-update` 仅影响首次安装。
 
 ## 日常管理
 
@@ -61,7 +61,7 @@ Linux 安装脚本部署的服务支持后台自动更新。二进制目录由�
 
 ```bash
 sudo bash install.sh
-sudo bash install.sh --version v1.0.1
+sudo bash install.sh --version v1.0.2
 ```
 
 手动脚本升级会先完成下载和校验，再停止服务、备份配置和整个数据目录、替换程序并检查健康状态。更新偏好保存在 `data/live/update-settings.json`，后续安装不会重置。
@@ -95,10 +95,10 @@ sudo systemctl start shiguang
 维护者推送 `v主版本.次版本.补丁版本` tag 后，GitHub Actions 自动测试、编译、打包，再发布 Release：
 
 ```bash
-git tag -a v1.0.2 -m "v1.0.2"
-git push origin v1.0.2
+git tag -a v1.0.3 -m "v1.0.3"
+git push origin v1.0.3
 ```
 
-发布平台包括 Linux amd64 / arm64、Windows amd64、macOS amd64 / arm64。归档名称如 `shiguang_1.0.1_linux_amd64.tar.gz`，归档内包含程序、README、安装文档及配置示例；Release 同时提供 `install.sh` 和 `checksums.txt`。构建失败不会发布；上传完全部文件后才将草稿转为正式版本。已发布版本不覆盖，修正应使用新 tag。
+发布平台包括 Linux amd64 / arm64、Windows amd64、macOS amd64 / arm64。归档名称如 `shiguang_1.0.2_linux_amd64.tar.gz`，归档内包含程序、README、安装文档及配置示例；Release 同时提供 `install.sh` 和 `checksums.txt`。构建失败不会发布；上传完全部文件后才将草稿转为正式版本。已发布版本不覆盖，修正应使用新 tag。
 
 在 Actions 手动运行该工作流仅生成构建产物，不创建正式 Release。

@@ -8,7 +8,8 @@ readonly SERVICE='shiguang'
 readonly SERVICE_USER='shiguang'
 install_dir='/opt/shiguang'
 release_version='latest'
-listen_addr='127.0.0.1:8080'
+listen_addr='0.0.0.0:8080'
+listen_explicit=false
 auto_update=true
 tmp_dir=''
 
@@ -17,12 +18,13 @@ usage() {
   cat <<'USAGE'
 拾光 Linux 安装 / 升级
 用法：sudo bash install.sh [选项]
-  --version v1.0.0        安装指定稳定版本（默认 latest）
+  --version v1.0.2        安装指定稳定版本（默认 latest）
   --dir /opt/shiguang     安装目录，必须位于 /opt 下
-  --listen HOST:PORT     首次安装的监听地址（默认 127.0.0.1:8080）
+  --listen HOST:PORT     监听地址（新安装默认 0.0.0.0:8080；升级时显式传入可修改）
   --no-auto-update        首次安装不启用自动更新，仍自动检查
   --help                 显示帮助
-已有 .env、管理员、API 密钥、CDK 和自动更新偏好均保留。
+升级保留已有配置；只有显式 --listen 会修改 LISTEN_ADDR。
+管理员、API 密钥、CDK 和自动更新偏好均保留。
 USAGE
 }
 
@@ -33,7 +35,7 @@ while (($#)); do
       case "$1" in
         --version) release_version="$2" ;;
         --dir) install_dir="$2" ;;
-        --listen) listen_addr="$2" ;;
+        --listen) listen_addr="$2"; listen_explicit=true ;;
       esac
       shift 2
       ;;
@@ -134,6 +136,18 @@ SMSBOWER_API_BASE=https://smsbower.page
 COOKIE_SECURE=false
 TRUSTED_PROXIES=
 ENV
+elif [[ "$listen_explicit" == true ]]; then
+  # Change only the requested setting, after the original config has been backed up.
+  # Read configuration as data; never source values or interpolate shell commands.
+  awk -v address="$listen_addr" '
+    /^[[:space:]]*LISTEN_ADDR[[:space:]]*=/ {
+      if (!found++) print "LISTEN_ADDR=" address
+      next
+    }
+    { print }
+    END { if (!found) print "LISTEN_ADDR=" address }
+  ' "$install_dir/.env" > "$tmp_dir/config.env"
+  install -o root -g "$SERVICE_USER" -m 0640 "$tmp_dir/config.env" "$install_dir/.env"
 fi
 chown "root:$SERVICE_USER" "$install_dir/.env"
 chmod 0640 "$install_dir/.env"
@@ -180,7 +194,7 @@ systemctl enable "$SERVICE"
 systemctl start "$SERVICE"
 
 # Read just the listen value, without executing .env contents.
-configured_listen="$(awk '/^[[:space:]]*LISTEN_ADDR=/ {sub(/^[^=]*=/, ""); gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, ""); print; exit}' "$install_dir/.env")"
+configured_listen="$(awk '/^[[:space:]]*LISTEN_ADDR[[:space:]]*=/ {sub(/^[^=]*=/, ""); gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, ""); print; exit}' "$install_dir/.env")"
 if [[ "$configured_listen" =~ ^([A-Za-z0-9._-]+|\[[0-9a-fA-F:]+\])?:[0-9]{1,5}$ ]]; then
   health_host="${configured_listen%:*}"
   case "$health_host" in ''|0.0.0.0) health_host=127.0.0.1 ;; '[::]') health_host='[::1]' ;; esac
@@ -194,6 +208,9 @@ if [[ "$configured_listen" =~ ^([A-Za-z0-9._-]+|\[[0-9a-fA-F:]+\])?:[0-9]{1,5}$ 
     fail "服务未通过健康检查；数据与升级前备份已保留。运行 journalctl -u $SERVICE -n 80 查看原因"
   fi
   printf '已安装 %s。管理后台：%s/admin\n' "$release_version" "$health_url"
+  if [[ "${configured_listen%:*}" == 0.0.0.0 || "${configured_listen%:*}" == '[::]' || "${configured_listen%:*}" == '' ]]; then
+    printf '已监听全部网卡；公网访问地址：http://服务器IP:%s/admin\n' "${configured_listen##*:}"
+  fi
 else
   systemctl is-active --quiet "$SERVICE" || fail '服务未启动，请查看 journalctl -u shiguang'
   printf '已安装 %s，请按保留的 .env 监听地址访问 /admin。\n' "$release_version"

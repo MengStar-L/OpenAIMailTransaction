@@ -42,7 +42,7 @@ chmod 0755 "$smoke_dir/shim/curl"
 
 # The only shim is curl: exact GitHub download URLs use the just-built archive;
 # actual localhost health checks still use /usr/bin/curl.
-PATH="$smoke_dir/shim:$PATH" bash "$script_dir/install.sh" --dir "$prefix" --listen 127.0.0.1:18080
+PATH="$smoke_dir/shim:$PATH" bash "$script_dir/install.sh" --dir "$prefix"
 [[ "$(systemctl show shiguang -p User --value)" == shiguang ]]
 [[ "$(systemctl show shiguang -p Restart --value)" == always ]]
 process_id="$(systemctl show shiguang -p MainPID --value)"
@@ -57,7 +57,12 @@ SHIGUANG_SMOKE_BAD_CHECKSUM=1 PATH="$smoke_dir/shim:$PATH" bash "$script_dir/ins
 systemctl is-active --quiet shiguang
 python3 "$SHIGUANG_SMOKE_HELPER" unchanged
 
-# Existing configuration and update preferences override these first-install flags.
+# An explicit --listen updates only that setting after backing up the original .env.
 PATH="$smoke_dir/shim:$PATH" bash "$script_dir/install.sh" --dir "$prefix" --version v999.0.1 --listen 0.0.0.0:18081 --no-auto-update
-python3 "$SHIGUANG_SMOKE_HELPER" verify
-printf 'Linux systemd smoke passed: install, non-root service, 25-minute default, administrator/CDK/key persistence, rejected checksum, upgrade, backup.\n'
+SHIGUANG_SMOKE_BASE='http://127.0.0.1:18081' python3 "$SHIGUANG_SMOKE_HELPER" verify 0.0.0.0:18081
+python3 "$SHIGUANG_SMOKE_HELPER" capture
+
+# An upgrade without --listen preserves the custom port and update preferences.
+PATH="$smoke_dir/shim:$PATH" bash "$script_dir/install.sh" --dir "$prefix" --version v999.0.1
+SHIGUANG_SMOKE_BASE='http://127.0.0.1:18081' python3 "$SHIGUANG_SMOKE_HELPER" verify preserve 2
+printf 'Linux systemd smoke passed: public default, non-root service, 25-minute default, administrator/CDK/key persistence, rejected checksum, upgrade, explicit listen change, backup.\n'
