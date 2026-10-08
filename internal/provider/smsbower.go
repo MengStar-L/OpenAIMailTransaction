@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -89,7 +90,7 @@ func (s *SMSBower) request(ctx context.Context, path string, values url.Values, 
 	resp, err := s.client.Do(req)
 	if err != nil {
 		// net/url errors include the full query and must never escape this layer.
-		return nil, &Error{Code: "upstream_unavailable", Message: "资源平台连接失败，请稍后查看订单", Uncertain: allocating}
+		return nil, &Error{Code: "upstream_unavailable", Message: "资源平台连接失败，请稍后查看订单", Uncertain: allocating, DiagnosticReason: transportDiagnosticReason(ctx, err)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -97,9 +98,36 @@ func (s *SMSBower) request(ctx context.Context, path string, values url.Values, 
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil || len(body) > maxResponseBytes {
-		return nil, invalidResponse(allocating)
+		failure := invalidResponse(allocating)
+		if err != nil {
+			failure.DiagnosticReason = transportDiagnosticReason(ctx, err)
+		}
+		return nil, failure
 	}
 	return body, nil
+}
+
+// Keep only known transport categories. The original cause can contain the
+// credential-bearing request URL and must never be retained in a public error.
+func transportDiagnosticReason(ctx context.Context, err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "request_cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "request_timeout"
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return "request_timeout"
+	}
+	switch ctx.Err() {
+	case context.Canceled:
+		return "request_cancelled"
+	case context.DeadlineExceeded:
+		return "request_timeout"
+	default:
+		return ""
+	}
 }
 
 func retryAfter(raw string) time.Duration {
@@ -128,7 +156,10 @@ func recognizedError(raw string) *Error {
 	case "no_activation", "pass mail id", "no activation found with such id":
 		return &Error{Code: "activation_not_found", Message: "资源平台未找到该订单，请联系管理员核验"}
 	case "early_cancel_denied":
-		return &Error{Code: "early_cancel", Message: "资源平台尚不允许取消，请稍后重试", RetryAfter: 2 * time.Minute}
+		// This response gives no remaining duration. Retry briefly rather than
+		// starting another two-minute minimum age on each rejection. This is our
+		// local request throttle, not an upstream promise that release is ready.
+		return &Error{Code: "early_cancel", Message: "资源平台尚不允许取消，正在等待开放取消", RetryAfter: 10 * time.Second}
 	case "bad_status", "bad actual activation status":
 		return &Error{Code: "bad_status", Message: "资源平台订单状态已变化，请刷新或联系管理员"}
 	}
@@ -162,9 +193,9 @@ func (s *SMSBower) Allocate(ctx context.Context, req Request) (Activation, error
 	}
 	a := Activation{ExpiresAt: start.Add(req.TTL), CancelAfter: start}
 	if req.Kind == "phone" {
-		// Calculate from response receipt so network time cannot shorten the
-		// platform's two-minute minimum cancellation window.
-		a.CancelAfter = time.Now().UTC().Add(2 * time.Minute)
+		// Let setStatus decide whether this activation can already be cancelled.
+		// The API may reject early cancellation, but allocation supplies no
+		// per-activation cancellation deadline to justify a local blanket delay.
 		if strings.HasPrefix(strings.TrimSpace(string(body)), "ACCESS_NUMBER:") {
 			parts := strings.Split(strings.TrimSpace(string(body)), ":")
 			if len(parts) != 3 {

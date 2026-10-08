@@ -61,8 +61,78 @@ func TestAllocatePhoneV2PreservesPriceAndUpstreamDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if activation.ID != "12345" || activation.Resource != "+447700900123" || !activation.ExpiresAt.Equal(deadline) || activation.CancelAfter.Before(before.Add(2*time.Minute)) {
+	if activation.ID != "12345" || activation.Resource != "+447700900123" || !activation.ExpiresAt.Equal(deadline) || activation.CancelAfter.Before(before) || activation.CancelAfter.After(time.Now()) {
 		t.Fatalf("incorrect activation: %+v", activation)
+	}
+}
+
+func TestNewPhoneCanImmediatelyRequestUpstreamCancellation(t *testing.T) {
+	for _, allocationBody := range []string{
+		`{"activationId":778899,"phoneNumber":"447700900123"}`,
+		"ACCESS_NUMBER:778899:447700900123",
+	} {
+		t.Run(allocationBody, func(t *testing.T) {
+			var allocations, cancellations atomic.Int32
+			client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if r.URL.Path != "/stubs/handler_api.php" || q.Get("api_key") != testKey {
+					t.Error("unexpected phone lifecycle request")
+				}
+				switch q.Get("action") {
+				case "getNumberV2":
+					allocations.Add(1)
+					fmt.Fprint(w, allocationBody)
+				case "setStatus":
+					cancellations.Add(1)
+					if q.Get("id") != "778899" || q.Get("status") != "8" {
+						t.Error("cancellation must target the newly allocated phone")
+					}
+					fmt.Fprint(w, "ACCESS_CANCEL")
+				default:
+					t.Error("unexpected request in allocate/cancel lifecycle")
+				}
+			})
+			activation, err := client.Allocate(context.Background(), phoneRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if activation.CancelAfter.After(time.Now()) {
+				t.Fatalf("allocation imposed an unreported cancellation delay: %v", activation.CancelAfter)
+			}
+			if err := client.Cancel(context.Background(), "phone", activation.ID); err != nil {
+				t.Fatalf("immediate upstream cancellation rejected locally: %v", err)
+			}
+			if allocations.Load() != 1 || cancellations.Load() != 1 {
+				t.Fatalf("unexpected request counts: allocations=%d cancellations=%d", allocations.Load(), cancellations.Load())
+			}
+		})
+	}
+}
+
+func TestEarlyCancellationRefusalHasShortLocalRetryThrottle(t *testing.T) {
+	var cancellations atomic.Int32
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("action") != "setStatus" || q.Get("id") != "123" || q.Get("status") != "8" {
+			t.Error("wrong phone cancellation request")
+		}
+		if cancellations.Add(1) <= 2 {
+			fmt.Fprint(w, "EARLY_CANCEL_DENIED")
+			return
+		}
+		fmt.Fprint(w, "STATUS_CANCEL")
+	})
+	for attempt := 1; attempt <= 2; attempt++ {
+		e := typedError(t, client.Cancel(context.Background(), "phone", "123"), "early_cancel", false)
+		if e.RetryAfter != 10*time.Second {
+			t.Fatalf("retry throttle = %v, want 10 seconds", e.RetryAfter)
+		}
+		if cancellations.Load() != int32(attempt) {
+			t.Fatal("the provider must not internally retry a rejected cancellation")
+		}
+	}
+	if err := client.Cancel(context.Background(), "phone", "123"); err != nil {
+		t.Fatalf("later explicit cancellation confirmation was not accepted: %v", err)
 	}
 }
 
@@ -322,6 +392,7 @@ func TestCancelAndCompleteUseDistinctDocumentedStatuses(t *testing.T) {
 func TestUnconfirmedCancellationCannotReleaseResource(t *testing.T) {
 	for _, tc := range []struct{ kind, body string }{
 		{"phone", "NO_ACTIVATION"}, {"phone", "ACCESS_ACTIVATION"}, {"phone", "ACCESS_READY"},
+		{"phone", "STATUS_WAIT_CODE"}, {"phone", "STATUS_UNKNOWN"}, {"phone", "ACCESS_CANCEL:" + testKey},
 		{"email", `{"status":1}`}, {"email", `{"status":0,"error":"Bad actual activation status"}`},
 		{"email", `{"status":0,"error":"No activation found with such id"}`},
 	} {
@@ -330,10 +401,31 @@ func TestUnconfirmedCancellationCannotReleaseResource(t *testing.T) {
 			t.Fatalf("unconfirmed cancellation accepted: %s", tc.body)
 		}
 	}
-	client := testClient(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "EARLY_CANCEL_DENIED") })
-	if e := typedError(t, client.Cancel(context.Background(), "phone", "123"), "early_cancel", false); e.RetryAfter != 2*time.Minute {
-		t.Fatal("early cancel must retain a two-minute retry window")
-	}
+}
+
+func TestCancellationTransportFailureDoesNotConfirmRelease(t *testing.T) {
+	t.Run("upstream_throttle", func(t *testing.T) {
+		var requests atomic.Int32
+		client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, "ACCESS_CANCEL")
+		})
+		e := typedError(t, client.Cancel(context.Background(), "phone", "123"), "upstream_http", false)
+		if e.RetryAfter != time.Minute || requests.Load() != 1 {
+			t.Fatalf("upstream throttle was not preserved: delay=%v requests=%d", e.RetryAfter, requests.Load())
+		}
+	})
+	t.Run("connection_failure", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		client, err := NewSMSBower(server.URL, testKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.Close()
+		typedError(t, client.Cancel(context.Background(), "phone", "123"), "upstream_unavailable", false)
+	})
 }
 
 func TestExplicitExpiryCannotExtendLocalWindowOrUseCreationDate(t *testing.T) {

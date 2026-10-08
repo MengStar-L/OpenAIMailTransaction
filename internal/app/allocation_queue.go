@@ -262,16 +262,17 @@ func (a *App) enqueueAllocation(o *Order) error {
 // The caller holds providerGate followed by orderLockKey throughout the upstream
 // call and its final durable write, so cancellation cannot discard a purchase.
 func (a *App) performAllocation(o *Order, request provider.Request) error {
-	ctx, cancel := a.providerContext()
+	started := time.Now()
 	var activation provider.Activation
 	var allocErr error
 	var phoneStockExhausted bool
 	if request.Kind == "phone" {
-		activation, allocErr, phoneStockExhausted = retryPhoneAllocation(ctx, a.currentClient(), request, phoneAllocationWindow, phoneAllocationRetry)
+		activation, allocErr, phoneStockExhausted = retryPhoneAllocation(a.ctx, a.currentClient(), request, phoneAllocationWindow, phoneAllocationRetry)
 	} else {
+		ctx, cancel := a.providerContext()
 		activation, allocErr = a.currentClient().Allocate(ctx, request)
+		cancel()
 	}
-	cancel()
 	a.observeEmailAllocation(request, allocErr)
 	if allocErr != nil {
 		var pe *provider.Error
@@ -291,7 +292,7 @@ func (a *App) performAllocation(o *Order, request provider.Request) error {
 		if err := a.saveOrder(o, "review"); err != nil {
 			return err
 		}
-		a.audit("allocation_uncertain", o.ID, "Upstream purchase result requires reconciliation")
+		a.audit("allocation_uncertain", o.ID, allocationUncertainDetail(request.Kind, allocErr, time.Since(started)))
 		return nil
 	}
 	o.ProviderID, o.Resource = activation.ID, activation.Resource

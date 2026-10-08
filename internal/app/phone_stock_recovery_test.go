@@ -68,7 +68,9 @@ func (p *phoneDeadlineProvider) Allocate(ctx context.Context, req provider.Reque
 
 func TestPhoneAllocationDeadlineDuringPurchaseRemainsUncertain(t *testing.T) {
 	p := &phoneDeadlineProvider{&testProvider{}}
-	_, err, exhausted := retryPhoneAllocation(context.Background(), p, provider.Request{Kind: "phone"}, 15*time.Millisecond, time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err, exhausted := retryPhoneAllocation(ctx, p, provider.Request{Kind: "phone"}, 5*time.Millisecond, time.Millisecond)
 	var pe *provider.Error
 	if !errors.As(err, &pe) || !pe.Uncertain || exhausted || p.allocations != 1 {
 		t.Fatalf("deadline treated as no stock: %v %v %d", err, exhausted, p.allocations)

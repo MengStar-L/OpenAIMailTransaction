@@ -67,6 +67,9 @@ type Error struct {
 	Code, Message string
 	Uncertain     bool
 	RetryAfter    time.Duration
+	// DiagnosticReason is a bounded internal classification, never a wrapped
+	// transport error or URL. It is excluded from public JSON error responses.
+	DiagnosticReason string `json:"-"`
 }
 
 func (e *Error) Error() string { return e.Message }
