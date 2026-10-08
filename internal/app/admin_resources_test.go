@@ -3,6 +3,7 @@ package app
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -262,6 +263,7 @@ func TestAdminResourceMissingKeyAndParametersBlockPurchase(t *testing.T) {
 		if w.Code != 409 {
 			t.Fatalf("missing key allowed %s allocation: %d", kind, w.Code)
 		}
+		assertAdminAllocationRejected(t, w)
 	}
 	p := &testProvider{}
 	a.client = p
@@ -270,6 +272,7 @@ func TestAdminResourceMissingKeyAndParametersBlockPurchase(t *testing.T) {
 		if w.Code != 409 {
 			t.Fatalf("missing settings allowed %s allocation: %d", kind, w.Code)
 		}
+		assertAdminAllocationRejected(t, w)
 	}
 	if allocations, _, _, _ := p.counts(); allocations != 0 {
 		t.Fatal("invalid parameters reached provider")
@@ -277,6 +280,97 @@ func TestAdminResourceMissingKeyAndParametersBlockPurchase(t *testing.T) {
 	var count int
 	if err = a.db.QueryRow("SELECT COUNT(*) FROM orders").Scan(&count); err != nil || count != 0 {
 		t.Fatal("invalid purchase left an intent")
+	}
+}
+
+func assertAdminAllocationRejected(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var response struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusConflict || response.Code != "admin_allocation_rejected" || response.Error == "" {
+		t.Fatalf("missing safe pre-purchase rejection: HTTP %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminPhonePrePurchaseRejectionAllowsNewSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, country, channel string
+		catalogErr             error
+	}{
+		{name: "missing choice"},
+		{name: "disallowed country", country: "16", channel: "9000"},
+		{name: "above price ceiling", country: "0", channel: "4000"},
+		{name: "no stock", country: "0", channel: "4001"},
+		{name: "invalid channel", country: "0", channel: "2368,3243"},
+		{name: "catalog failure", country: "0", channel: "2368", catalogErr: errors.New("catalog unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, p := catalogTestApp(t)
+			cookie := adminCookie(t, a)
+			p.catalogErr = tc.catalogErr
+			w := apiRequest(a.Handler(), "POST", "/api/admin/resources", map[string]string{
+				"kind": "phone", "request_id": "rejected-phone-request-01", "phone_country": tc.country, "phone_provider_id": tc.channel,
+			}, "", cookie, "")
+			assertAdminAllocationRejected(t, w)
+			for _, table := range []string{"orders", "admin_resource_requests"} {
+				var count int
+				if err := a.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("rejection persisted %s intent: count=%d err=%v", table, count, err)
+				}
+			}
+			if p.allocations != 0 {
+				t.Fatal("rejected selection reached purchase endpoint")
+			}
+			p.catalogErr = nil
+			order := parseOrder(t, apiRequest(a.Handler(), "POST", "/api/admin/resources", map[string]string{
+				"kind": "phone", "request_id": "corrected-phone-request-01", "phone_country": "187", "phone_provider_id": "3243",
+			}, "", cookie, ""))
+			if order.Order.PhoneChannel == nil || order.Order.PhoneChannel.ProviderID != "3243" || p.allocations != 1 || p.requests[0].Country != "187" || p.requests[0].MaxPrice != "0.12" {
+				t.Fatalf("corrected choice did not purchase exactly the selected channel: order=%+v requests=%+v", order.Order, p.requests)
+			}
+		})
+	}
+}
+
+func TestAdminPhoneRetryChoiceCannotReplaceAcceptedRequest(t *testing.T) {
+	a, p := catalogTestApp(t)
+	cookie := adminCookie(t, a)
+	// A legacy pending request may have lost its choice. Filling it in with the
+	// same key is safe because accepted keys are resolved before new selections.
+	body := map[string]string{"kind": "phone", "request_id": "legacy-pending-phone-01"}
+	w := apiRequest(a.Handler(), "POST", "/api/admin/resources", body, "", cookie, "")
+	assertAdminAllocationRejected(t, w)
+	body["phone_country"], body["phone_provider_id"] = "0", "2368"
+	original := parseOrder(t, apiRequest(a.Handler(), "POST", "/api/admin/resources", body, "", cookie, ""))
+	body["phone_country"], body["phone_provider_id"] = "187", "3243"
+	p.catalogErr = errors.New("catalog unavailable")
+	replay := parseOrder(t, apiRequest(a.Handler(), "POST", "/api/admin/resources", body, "", cookie, ""))
+	if replay.Order.ID != original.Order.ID || replay.Order.PhoneChannel == nil || replay.Order.PhoneChannel.ProviderID != "2368" || p.allocations != 1 {
+		t.Fatal("changed retry selection replaced an accepted request")
+	}
+	// A different key must resume and bind to an existing active order even if
+	// its selection is missing. Its delayed retry stays bound after cancellation.
+	activeBody := map[string]string{"kind": "phone", "request_id": "active-pending-phone-02"}
+	active := parseOrder(t, apiRequest(a.Handler(), "POST", "/api/admin/resources", activeBody, "", cookie, ""))
+	if active.Order.ID != original.Order.ID || p.allocations != 1 {
+		t.Fatal("active order was bypassed by a missing choice")
+	}
+	adminAction(t, a, cookie, original.Order.ID, "cancel", map[string]any{})
+	for _, retry := range []map[string]string{body, activeBody} {
+		o := parseOrder(t, apiRequest(a.Handler(), "POST", "/api/admin/resources", retry, "", cookie, ""))
+		if o.Order.ID != original.Order.ID || o.Order.Status != "cancelled" || p.allocations != 1 {
+			t.Fatal("accepted request replay allocated after cancellation")
+		}
+	}
+	// A cross-kind conflict refers to an accepted key, so it cannot claim that
+	// no allocation occurred or invite the browser to discard the pending key.
+	body["kind"] = "email"
+	w = apiRequest(a.Handler(), "POST", "/api/admin/resources", body, "", cookie, "")
+	var conflict map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &conflict); err != nil || w.Code != http.StatusConflict || conflict["code"] != nil {
+		t.Fatalf("accepted request conflict was marked safe to discard: HTTP %d %s", w.Code, w.Body.String())
 	}
 }
 

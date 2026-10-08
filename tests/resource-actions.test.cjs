@@ -25,13 +25,17 @@ if (!chromium) {
     };
   }
 
-  async function fixture({ admin = false, resource = order(), fallbackCopy = false, freshCDK = false, clock = false } = {}) {
+  async function fixture({ admin = false, resource = order(), fallbackCopy = false, freshCDK = false, clock = false, initialStorage = {} } = {}) {
     const tab = await browser.newPage({ viewport: { width: 1200, height: 900 } });
-    const state = { order: resource, cancelRequests: [], errors: [], releaseCancel: null, allocationRequests: [], allocationResult: null, catalogRequests: 0, waitAllocation: false, releaseAllocation: null, catalogChannels: null };
+    const state = { order: resource, cancelRequests: [], errors: [], releaseCancel: null, allocationRequests: [], allocationResult: null, allocationErrors: [], catalogRequests: 0, waitAllocation: false, releaseAllocation: null, catalogChannels: null };
     tab.on('pageerror', error => state.errors.push(error.message));
     if (clock) await tab.clock.install();
-    await tab.addInitScript(({ fallbackCopy, freshCDK }) => {
+    await tab.addInitScript(({ fallbackCopy, freshCDK, initialStorage }) => {
       if (!freshCDK) sessionStorage.setItem('atelier.resource.token', 'fixture-token');
+      if (!sessionStorage.getItem('fixture-seeded')) {
+        Object.entries(initialStorage).forEach(([key, value]) => localStorage.setItem(key, value));
+        sessionStorage.setItem('fixture-seeded', 'true');
+      }
       window.copies = [];
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: fallbackCopy ? undefined : {
         writeText: async value => window.copies.push(value),
@@ -41,7 +45,7 @@ if (!chromium) {
         window.copies.push(document.activeElement.value);
         return true;
       };
-    }, { fallbackCopy, freshCDK });
+    }, { fallbackCopy, freshCDK, initialStorage });
     await tab.route('**/*', async route => {
       const request = route.request();
       const url = new URL(request.url());
@@ -52,12 +56,15 @@ if (!chromium) {
       if (request.method() === 'POST' && ['/api/admin/resources', '/api/orders/replace', '/api/redeem'].includes(url.pathname)) {
         state.allocationRequests.push(request.postDataJSON());
         if (state.waitAllocation) await new Promise(resolve => { state.releaseAllocation = resolve; });
+        const rejection = state.allocationErrors.shift();
+        if (rejection?.abort) return route.abort('failed');
+        if (rejection) return route.fulfill({ status: rejection.status, contentType: 'application/json', body: JSON.stringify({ error: rejection.message || '请选择可用的手机号渠道', code: rejection.code }) });
         state.order = state.allocationResult || order('phone', { id: 'failed-allocation-fixture', status: 'failed', resource: '', message: '所选渠道暂时无法分配，请选择其他渠道' });
         return json({ token: 'fixture-token', order: state.order });
       }
-      if (url.pathname === '/api/admin/resources') return json({ orders: [state.order] });
-      if (url.pathname === '/api/orders/current' || url.pathname === `/api/admin/resources/${resource.id}`) return json({ order: state.order });
-      if (url.pathname === '/api/orders/cancel' || url.pathname === `/api/admin/resources/${resource.id}/cancel`) {
+      if (url.pathname === '/api/admin/resources') return json({ orders: state.order ? [state.order] : [] });
+      if (url.pathname === '/api/orders/current' || url.pathname === `/api/admin/resources/${resource?.id}`) return json({ order: state.order });
+      if (url.pathname === '/api/orders/cancel' || url.pathname === `/api/admin/resources/${resource?.id}/cancel`) {
         state.cancelRequests.push({ method: request.method(), headers: request.headers(), body: request.postDataJSON() });
         await new Promise(resolve => { state.releaseCancel = resolve; });
         state.order = { ...state.order, status: 'cancel_pending', message: '已申请取消，正在等待上游释放' };
@@ -74,7 +81,7 @@ if (!chromium) {
       return route.fulfill({ status: 204, body: '' });
     });
     await tab.goto(`https://shiguang.test/${admin ? 'admin?tab=resources' : ''}`);
-    await tab.locator(freshCDK ? '#cdk' : admin ? `[data-admin-copy-resource]` : '#copy-resource').waitFor();
+    await tab.locator(freshCDK ? '#cdk' : admin ? resource ? `[data-admin-copy-resource]` : '#admin-resource-phone' : '#copy-resource').waitFor();
     return { tab, state };
   }
 
@@ -209,5 +216,134 @@ if (!chromium) {
         assert.deepEqual(state.errors, []);
       } finally { await tab.close(); }
     }
+  });
+
+  const adminPhoneKey = 'atelier.admin.resource.request.phone';
+  const phoneAcquire = '#admin-resource-phone [data-resource-action="create"]';
+
+  test('legacy admin retries repair missing or malformed channel choices while preserving the request ID', async () => {
+    for (const cached of [null, '{broken', JSON.stringify({ phone_country: '0', phone_provider_id: '' })]) {
+      const requestID = 'legacy-admin-request-0001';
+      const initialStorage = { [adminPhoneKey]: requestID };
+      if (cached != null) initialStorage[`${adminPhoneKey}.phone_choice`] = cached;
+      const { tab, state } = await fixture({ admin: true, resource: null, initialStorage });
+      try {
+        const acquire = tab.locator(phoneAcquire);
+        const choice = tab.locator('#admin-phone-channels input[value="0:12"]');
+        await choice.waitFor();
+        assert.equal(await acquire.isDisabled(), true, 'an incomplete pending choice still requires a visible selection');
+        await choice.check();
+        state.allocationResult = order('phone', { request_id: requestID });
+        await acquire.click();
+        await tab.locator('[data-admin-copy-resource]').waitFor();
+        assert.deepEqual(state.allocationRequests, [{ kind: 'phone', request_id: requestID, phone_country: '0', phone_provider_id: '12' }]);
+        assert.equal(await tab.evaluate(key => localStorage.getItem(key), adminPhoneKey), null);
+        assert.deepEqual(state.errors, []);
+      } finally { await tab.close(); }
+    }
+  });
+
+  test('explicit pre-allocation rejection clears only that request and accepts a newly selected channel', async () => {
+    const { tab, state } = await fixture({ admin: true, resource: null });
+    try {
+      state.allocationErrors.push({ status: 409, code: 'admin_allocation_rejected' });
+      await tab.locator('#admin-phone-channels input[value="0:11"]').check();
+      await tab.locator(phoneAcquire).click();
+      await tab.waitForFunction(() => document.querySelector('#admin-resource-error-phone')?.textContent.includes('请选择可用'));
+      await tab.locator('#admin-phone-channels input[value="0:12"]').waitFor();
+      assert.equal(await tab.evaluate(key => localStorage.getItem(key), adminPhoneKey), null);
+      assert.equal(await tab.locator(phoneAcquire).isDisabled(), true, 'rejected choices require an explicit new choice');
+      await tab.locator('#admin-phone-channels input[value="0:12"]').check();
+      state.allocationResult = order();
+      await tab.locator(phoneAcquire).click();
+      await tab.locator('[data-admin-copy-resource]').waitFor();
+      assert.equal(state.allocationRequests.length, 2);
+      assert.equal(state.allocationRequests[0].phone_provider_id, '11');
+      assert.equal(state.allocationRequests[1].phone_provider_id, '12');
+      assert.notEqual(state.allocationRequests[1].request_id, state.allocationRequests[0].request_id);
+      assert.deepEqual(state.errors, []);
+    } finally { await tab.close(); }
+  });
+
+  test('uncertain admin purchases retain their original ID and channel through retry and reload', async () => {
+    for (const rejection of [{ abort: true }, { status: 503 }, { status: 409 }]) {
+      const { tab, state } = await fixture({ admin: true, resource: null });
+      try {
+        state.allocationErrors.push(rejection);
+        await tab.locator('#admin-phone-channels input[value="0:11"]').check();
+        await tab.locator(phoneAcquire).click();
+        await tab.waitForFunction(() => document.querySelector('#admin-resource-error-phone')?.textContent);
+        assert.equal(await tab.locator(phoneAcquire).innerText(), '确认上次申请');
+        assert.equal(await tab.locator('#admin-phone-channels input').count(), 0, 'unknown purchases must not pretend a new channel can be chosen');
+        assert.match(await tab.locator('#admin-resource-phone').innerText(), /#11/);
+        const firstRequest = state.allocationRequests[0];
+        assert.equal(await tab.evaluate(key => localStorage.getItem(key), adminPhoneKey), firstRequest.request_id);
+        await tab.reload();
+        await tab.locator(phoneAcquire).waitFor();
+        assert.equal(await tab.locator(phoneAcquire).innerText(), '确认上次申请');
+        assert.equal(await tab.locator('#admin-phone-channels input').count(), 0);
+        state.allocationResult = order('phone', { request_id: firstRequest.request_id });
+        await tab.locator(phoneAcquire).click();
+        await tab.locator('[data-admin-copy-resource]').waitFor();
+        assert.deepEqual(state.allocationRequests, [firstRequest, firstRequest], 'a lost response never creates a second purchase identity');
+        assert.equal(await tab.evaluate(key => localStorage.getItem(key), adminPhoneKey), null);
+        assert.deepEqual(state.errors, []);
+      } finally { await tab.close(); }
+    }
+  });
+
+  test('a delayed validation rejection cannot erase a newer request saved by another tab', async () => {
+    for (const rejection of [{ status: 409, code: 'admin_allocation_rejected' }, { status: 400 }, { status: 422 }]) {
+      const { tab, state } = await fixture({ admin: true, resource: null });
+      try {
+        state.waitAllocation = true;
+        state.allocationErrors.push(rejection);
+        await tab.locator('#admin-phone-channels input[value="0:11"]').check();
+        await tab.locator(phoneAcquire).click();
+        await tab.waitForFunction(() => document.querySelector('[aria-busy="true"]'));
+        const newRequestID = 'newer-admin-request-0002';
+        await tab.evaluate(({ key, requestID }) => {
+          localStorage.setItem(key, requestID);
+          localStorage.setItem(`${key}.phone_choice`, JSON.stringify({ phone_country: '0', phone_provider_id: '12' }));
+        }, { key: adminPhoneKey, requestID: newRequestID });
+        state.releaseAllocation();
+        await tab.waitForFunction(() => document.querySelector('#admin-resource-error-phone')?.textContent);
+        assert.equal(await tab.evaluate(key => localStorage.getItem(key), adminPhoneKey), newRequestID);
+        assert.match(await tab.locator('#admin-resource-phone').innerText(), /#12/);
+        assert.equal(await tab.locator(phoneAcquire).innerText(), '确认上次申请');
+        assert.deepEqual(state.errors, []);
+      } finally { state.releaseAllocation?.(); await tab.close(); }
+    }
+  });
+
+  test('another tab changing or clearing a pending purchase requires the updated action to be shown first', async () => {
+    const { tab, state } = await fixture({ admin: true, resource: null });
+    try {
+      await tab.locator('#admin-phone-channels input[value="0:11"]').check();
+      const otherRequestID = 'other-tab-request-0001';
+      await tab.evaluate(({ key, requestID }) => {
+        localStorage.setItem(key, requestID);
+        localStorage.setItem(`${key}.phone_choice`, JSON.stringify({ phone_country: '0', phone_provider_id: '12' }));
+      }, { key: adminPhoneKey, requestID: otherRequestID });
+      await tab.locator(phoneAcquire).click();
+      assert.equal(state.allocationRequests.length, 0, 'a purchase click must not silently confirm a different pending channel');
+      assert.equal(await tab.locator(phoneAcquire).innerText(), '确认上次申请');
+      assert.match(await tab.locator('#admin-resource-phone').innerText(), /#12/);
+      await tab.evaluate(key => {
+        localStorage.removeItem(key);
+        localStorage.removeItem(`${key}.phone_choice`);
+      }, adminPhoneKey);
+      await tab.locator(phoneAcquire).click();
+      assert.equal(state.allocationRequests.length, 0, 'a confirmation click must not silently become a new purchase after another tab resolves it');
+      assert.equal(await tab.locator(phoneAcquire).innerText(), '获取手机号');
+      await tab.locator('#admin-phone-channels input[value="0:12"]').check();
+      state.allocationResult = order();
+      await tab.locator(phoneAcquire).click();
+      await tab.locator('[data-admin-copy-resource]').waitFor();
+      assert.equal(state.allocationRequests.length, 1);
+      assert.notEqual(state.allocationRequests[0].request_id, otherRequestID);
+      assert.equal(state.allocationRequests[0].phone_provider_id, '12');
+      assert.deepEqual(state.errors, []);
+    } finally { await tab.close(); }
   });
 }

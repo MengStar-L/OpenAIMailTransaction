@@ -132,7 +132,8 @@
   }
   function updateAdminPhoneControls() {
     const button = byId('admin-resource-phone')?.querySelector('[data-resource-action="create"]');
-    if (button) button.disabled = adminResourceBusy.phone || (!readAdminRequest('phone') && (!adminPhoneChannels?.state.selected || adminPhoneChannels.state.loading));
+    const confirming = readAdminRequest('phone') && adminRequestPhoneChoice;
+    if (button) button.disabled = adminResourceBusy.phone || (!confirming && (!adminPhoneChannels?.state.selected || adminPhoneChannels.state.loading));
   }
   function mountAdminPhoneChannels() {
     const host = byId('admin-phone-channels');
@@ -643,21 +644,28 @@
     }
   }
   function adminRequestKey(kind) { return `atelier.admin.resource.request.${kind}`; }
+  function validAdminPhoneChoice(choice) {
+    if (!choice || !/^\d{1,5}$/.test(String(choice.phone_country ?? '')) || !/^\d{1,20}$/.test(String(choice.phone_provider_id ?? ''))) return null;
+    return { phone_country: String(choice.phone_country), phone_provider_id: String(choice.phone_provider_id) };
+  }
   function readAdminRequest(kind) {
     try {
       const requestID = localStorage.getItem(adminRequestKey(kind));
+      adminResourceRequests[kind] = requestID || '';
+      adminResourceRequestMinutes[kind] = null;
+      if (kind === 'phone') adminRequestPhoneChoice = null;
       if (requestID) {
-        adminResourceRequests[kind] = requestID;
         const minutes = Number(localStorage.getItem(`${adminRequestKey(kind)}.queue_minutes`));
         adminResourceRequestMinutes[kind] = Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440 ? minutes : null;
         if (kind === 'phone') {
-          try { adminRequestPhoneChoice = JSON.parse(localStorage.getItem(`${adminRequestKey(kind)}.phone_choice`) || 'null'); } catch { adminRequestPhoneChoice = null; }
+          try { adminRequestPhoneChoice = validAdminPhoneChoice(JSON.parse(localStorage.getItem(`${adminRequestKey(kind)}.phone_choice`) || 'null')); } catch { adminRequestPhoneChoice = null; }
         }
       }
     } catch { /* The server also restores active orders after a reload. */ }
     return adminResourceRequests[kind];
   }
   function saveAdminRequest(kind, value, queueMinutes = null, phoneChoice = null) {
+    phoneChoice = validAdminPhoneChoice(phoneChoice);
     adminResourceRequests[kind] = value;
     adminResourceRequestMinutes[kind] = value ? queueMinutes : null;
     if (kind === 'phone') adminRequestPhoneChoice = value ? phoneChoice : null;
@@ -674,6 +682,12 @@
     return Array.from(crypto.getRandomValues(new Uint8Array(24)), value => value.toString(16).padStart(2, '0')).join('');
   }
   function adminResourceTerminal(order) { return !order || ['completed', 'cancelled', 'expired', 'failed'].includes(order.status); }
+  function adminPhoneChoiceHTML(pending) {
+    if (!pending || !adminRequestPhoneChoice) return '<div id="admin-phone-channels" class="phone-catalog-slot"></div>';
+    const choice = adminRequestPhoneChoice;
+    const country = adminPhoneChannels?.state.channels.find(channel => channel.country === choice.phone_country)?.country_name || `国家 ${choice.phone_country}`;
+    return `<div class="resource-row"><span class="resource-value">${esc(country)} · #${esc(choice.phone_provider_id)}</span></div><p class="order-message">上次申请结果待确认</p>`;
+  }
   function renderAdminResources(data) {
     adminPhoneChannels?.invalidate();
     for (const kind of ['phone', 'email']) {
@@ -697,9 +711,12 @@
     const email = kind === 'email';
     const type = email ? '邮箱' : '手机号';
     const pending = readAdminRequest(kind);
+    card.dataset.pendingRequest = pending;
+    card.dataset.pendingPhoneChoice = !email && adminRequestPhoneChoice ? JSON.stringify(adminRequestPhoneChoice) : '';
+    const acquireLabel = pending ? !email && adminRequestPhoneChoice ? '确认上次申请' : '重试获取' : `获取${type}`;
     const heading = `<div class="direct-resource-heading"><div class="order-heading"><span class="kind-icon ${email ? 'email' : ''}">${icon(kind)}</span><h2>${type}</h2></div>${order ? badge(order.status, orderStatusName(order)) : `<span class="small-flower" aria-hidden="true">${icon('star')}</span>`}</div>`;
     if (!order) {
-      card.innerHTML = `${heading}<div class="direct-resource-empty ${email ? 'email' : ''}">${icon(kind)}<span>尚未领取</span></div>${email ? queuePreferenceHTML('admin-email-queue-minutes') : '<div id="admin-phone-channels" class="phone-catalog-slot"></div>'}<button class="button button-primary direct-acquire" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
+      card.innerHTML = `${heading}<div class="direct-resource-empty ${email ? 'email' : ''}">${icon(kind)}<span>尚未领取</span></div>${email ? queuePreferenceHTML('admin-email-queue-minutes') : adminPhoneChoiceHTML(pending)}<button class="button button-primary direct-acquire" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${acquireLabel}</button><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
     } else {
       const codes = Array.isArray(order.codes) && order.codes.length ? order.codes.filter(item => item.code) : order.code ? [{ round: 1, code: order.code }] : [];
       const round = Math.max(1, Math.min(3, Number(order.mail_round) || 1));
@@ -715,7 +732,7 @@
       const active = activeStatus(order.status);
       const waitLabel = order.status === 'allocating' ? '正在分配资源' : order.status === 'cancel_pending' ? '正在确认资源释放' : order.status === 'complete_pending' ? '正在确认接码结束' : pendingNext ? '接码状态待确认' : email ? `等待第 ${round} 封验证码` : '等待验证码';
       const history = codes.map((item, index) => `<div class="code-entry${receiptAnimation(order.id, item)}"><div class="code-entry-info">${email ? `<span class="code-round">第 ${Number(item.round) || index + 1} 封</span>` : ''}<span class="code-value ${String(item.code).length > 12 ? 'long-code' : ''}">${esc(item.code)}</span>${item.received_at ? `<time class="code-time" datetime="${esc(item.received_at)}">${formatDate(item.received_at)}</time>` : ''}</div><button class="copy-button" type="button" data-admin-copy-code="${index}" aria-label="复制${email ? `第 ${Number(item.round) || index + 1} 封` : ''}验证码">${icon('copy')}</button></div>`).join('');
-      card.innerHTML = `${heading}${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}">${esc(order.resource)}</span><button class="copy-button" type="button" data-admin-copy-resource aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${hasCode ? `<div class="code-history" aria-label="验证码记录">${history}</div>` : ''}${inQueue ? queueContent(order) : waiting ? `<div class="code-waiting ${hasCode ? 'following-code' : ''}"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span>${waitLabel}</div>` : !hasCode ? `<p class="terminal-message">${icon(order.status === 'completed' ? 'check' : 'clock')}${esc(orderStatusName(order))}</p>` : ''}</div><div class="order-meta">${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${active && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span data-admin-countdown>--:--</span></span>` : ''}</div>${active ? '<div class="order-progress"><span data-admin-progress></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canCreate) ? queuePreferenceHTML('admin-email-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${!email && canCreate ? '<div id="admin-phone-channels" class="phone-catalog-slot"></div>' : ''}<div class="order-actions">${canCancel ? `<button class="button button-ghost" type="button" data-resource-action="cancel">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button" data-resource-action="complete">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button class="button button-primary" type="button" data-resource-action="next-code">${icon('refresh')}重试接收</button>` : ''}${canCreate ? `<button class="button button-primary" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${pending ? '重试获取' : `获取${type}`}</button>` : ''}${['review', 'next_uncertain'].includes(order.status) ? '<button class="button button-ghost" type="button" data-admin-resolve>核查</button>' : ''}</div><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
+      card.innerHTML = `${heading}${order.resource ? `<div class="resource-row"><span class="resource-value ${email ? 'email' : ''}">${esc(order.resource)}</span><button class="copy-button" type="button" data-admin-copy-resource aria-label="复制${type}" title="复制${type}">${icon('copy')}</button></div>` : ''}<div class="code-box ${inQueue ? 'queue-box' : ''} ${hasCode ? 'received with-history' : ''}">${hasCode ? `<div class="code-history" aria-label="验证码记录">${history}</div>` : ''}${inQueue ? queueContent(order) : waiting ? `<div class="code-waiting ${hasCode ? 'following-code' : ''}"><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span>${waitLabel}</div>` : !hasCode ? `<p class="terminal-message">${icon(order.status === 'completed' ? 'check' : 'clock')}${esc(orderStatusName(order))}</p>` : ''}</div><div class="order-meta">${email && order.resource ? `<span>已收 ${codes.length} / 3 封</span>` : ''}${active && (inQueue || order.expires_at) ? `<span class="time-left">${icon('clock')}${inQueue ? '排队剩余 ' : '本地等待 '}<span data-admin-countdown>--:--</span></span>` : ''}</div>${active ? '<div class="order-progress"><span data-admin-progress></span></div>' : ''}${!inQueue && order.message && order.message !== queueResultLabel(order) ? `<p class="order-message">${esc(orderMessage(order))}</p>` : ''}${email && (queued || canCreate) ? queuePreferenceHTML('admin-email-queue-minutes', queued ? order.queue_minutes : queueMinutesPreference, queued, order.id) : ''}${!email && canCreate ? adminPhoneChoiceHTML(pending) : ''}<div class="order-actions">${canCancel ? `<button class="button button-ghost" type="button" data-resource-action="cancel">${queued ? '取消排队' : '取消本次'}</button>` : ''}${canComplete ? `<button class="button ${canNext ? 'button-ghost' : 'button-primary'}" type="button" data-resource-action="complete">${icon('check')}${email ? '结束邮箱' : '完成接码'}</button>` : ''}${canNext ? `<button class="button button-primary" type="button" data-resource-action="next-code">${icon('refresh')}重试接收</button>` : ''}${canCreate ? `<button class="button button-primary" type="button" data-resource-action="create">${icon(pending ? 'refresh' : 'plus')}${acquireLabel}</button>` : ''}${['review', 'next_uncertain'].includes(order.status) ? '<button class="button button-ghost" type="button" data-admin-resolve>核查</button>' : ''}</div><p id="admin-resource-error-${kind}" class="error-text" role="alert">${esc(adminResourceErrors[kind])}</p>`;
       card.querySelector('[data-admin-copy-resource]')?.addEventListener('click', () => copyResource(order));
       card.querySelectorAll('[data-admin-copy-code]').forEach(button => button.addEventListener('click', () => copyText(codes[Number(button.dataset.adminCopyCode)].code)));
       card.querySelector('[data-admin-resolve]')?.addEventListener('click', () => resolveDialog(order));
@@ -749,8 +766,18 @@
     if (order?.status === 'queued' && !['cancel', 'queue-wait'].includes(action)) return;
     if (action === 'create' && !adminResourceTerminal(order)) return;
     const pendingRequest = action === 'create' ? readAdminRequest(kind) : '';
-    const phoneChoice = kind === 'phone' && action === 'create' ? pendingRequest ? adminRequestPhoneChoice || {} : adminPhoneChannels?.selectedBody() || {} : {};
-    if (kind === 'phone' && action === 'create' && !pendingRequest && (!adminPhoneChannels?.state.selected || adminPhoneChannels.state.loading)) { fieldError('admin-resource-error-phone', '请选择一个渠道'); adminPhoneChannels?.focus(); return; }
+    const card = byId(`admin-resource-${kind}`);
+    if (action === 'create' && card && (card.dataset.pendingRequest !== pendingRequest || kind === 'phone' && card.dataset.pendingPhoneChoice !== (adminRequestPhoneChoice ? JSON.stringify(adminRequestPhoneChoice) : ''))) {
+      // Another tab may have resolved or replaced this request. Show the new
+      // state before accepting a click; a confirmation must never become a buy.
+      renderAdminResource(kind);
+      return;
+    }
+    // An unknown purchase keeps its original identity and payload. Older clients
+    // did not persist the channel; repair that payload without replacing its ID.
+    const rememberedChoice = pendingRequest ? adminRequestPhoneChoice : null;
+    const phoneChoice = kind === 'phone' && action === 'create' ? rememberedChoice || adminPhoneChannels?.selectedBody() || {} : {};
+    if (kind === 'phone' && action === 'create' && !rememberedChoice && (!adminPhoneChannels?.state.selected || adminPhoneChannels.state.loading)) { fieldError('admin-resource-error-phone', '请选择一个渠道'); adminPhoneChannels?.focus(); return; }
     let queueMinutes;
     if (kind === 'email' && ['create', 'queue-wait'].includes(action)) {
       try { queueMinutes = pendingRequest ? adminResourceRequestMinutes[kind] ?? undefined : queuePreferenceValue('admin-email-queue-minutes'); } catch (error) { fieldError(`admin-resource-error-${kind}`, error.message); return; }
@@ -776,7 +803,10 @@
       window.AdminBalance?.refresh(true);
     } catch (error) {
       adminResourceErrors[kind] = error.message;
-      if (action === 'create' && [400, 422].includes(error.status)) saveAdminRequest(kind, '');
+      if (action === 'create' && (error.code === 'admin_allocation_rejected' || [400, 422].includes(error.status)) && readAdminRequest(kind) === requestID) {
+        saveAdminRequest(kind, '');
+        if (kind === 'phone') adminPhoneChannels?.invalidate();
+      }
       if (generation === adminGeneration) {
         if (error.status === 401) await loadAdminAccess();
         else renderAdminResource(kind);

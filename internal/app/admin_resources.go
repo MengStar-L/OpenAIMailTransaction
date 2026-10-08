@@ -136,7 +136,7 @@ func (a *App) allocateAdminResource(w http.ResponseWriter, r *http.Request) {
 	}
 	s := a.currentSettings()
 	if err = a.validateAdminResource(in.Kind, s); err != nil {
-		fail(w, 409, err.Error())
+		adminAllocationRejected(w, err)
 		return
 	}
 	ttl := time.Duration(s.PhoneTTLMinutes) * time.Minute
@@ -145,7 +145,7 @@ func (a *App) allocateAdminResource(w http.ResponseWriter, r *http.Request) {
 	if in.Kind == "phone" {
 		request, selectedChannel, err = a.selectedPhoneRequest(s, in.phoneSelection)
 		if err != nil {
-			fail(w, 409, err.Error())
+			adminAllocationRejected(w, err)
 			return
 		}
 	}
@@ -184,6 +184,18 @@ func (a *App) allocateAdminResource(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit("admin_allocate_resource", o.ID, in.Kind)
 	a.allocateOrder(w, o, request)
+}
+
+// Only use this response after the request and active-order lookups, before an
+// allocation intent is persisted or a purchase is sent to the provider. It lets
+// the browser discard a rejected pending request safely and submit a new choice.
+// Conflicts involving accepted request IDs and uncertain outcomes must not carry
+// this code: those retries must keep their original idempotency key.
+func adminAllocationRejected(w http.ResponseWriter, err error) {
+	respond(w, http.StatusConflict, map[string]string{
+		"error": err.Error(),
+		"code":  "admin_allocation_rejected",
+	})
 }
 
 func (a *App) validateAdminResource(kind string, s Settings) error {
